@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""
+=============================================================================
+FHAWX-SSH // STREAMLINED RETRO AMBER CRT SSH MANAGER
+Target: Fhawx-Deck & Chromebooks
+Aesthetic: Burnt Orange / Amber Phosphor CRT TUI
+Zero Quad-Panes: Runs directly in active pane, reconnects on exit.
+=============================================================================
+"""
+
+import os
+import sys
+import json
+import curses
+import curses.textpad
+import subprocess
+import shutil
+
+CONFIG_DIR = os.path.expanduser("~/.config/ssh_station")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "hosts.json")
+
+DEFAULT_CONFIG = {
+    "hosts": [
+        {
+            "name": "Server 1 (Primary)",
+            "host": "192.168.1.100",
+            "user": "operator",
+            "port": 22,
+            "auth_type": "key",
+            "key_path": "~/.ssh/id_ed25519",
+            "password": ""
+        },
+        {
+            "name": "Workstation 2",
+            "host": "192.168.1.101",
+            "user": "operator",
+            "port": 22,
+            "auth_type": "key",
+            "key_path": "~/.ssh/id_ed25519",
+            "password": ""
+        },
+        {
+            "name": "Remote Node 3",
+            "host": "192.168.1.102",
+            "user": "operator",
+            "port": 22,
+            "auth_type": "key",
+            "key_path": "~/.ssh/id_ed25519",
+            "password": ""
+        }
+    ]
+}
+
+def load_config():
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+    if not os.path.exists(CONFIG_FILE):
+        save_config(DEFAULT_CONFIG)
+        return DEFAULT_CONFIG
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            data = json.load(f)
+            if "hosts" not in data or not isinstance(data["hosts"], list):
+                data["hosts"] = []
+            return data
+    except Exception:
+        return DEFAULT_CONFIG
+
+def save_config(cfg):
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=4)
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except Exception:
+        pass
+
+def build_ssh_command(target):
+    user = target.get("user", "").strip()
+    host = target.get("host", "").strip()
+    port = target.get("port", 22)
+    auth_type = target.get("auth_type", "key")
+    key_path = os.path.expanduser(target.get("key_path", "").strip())
+    password = target.get("password", "")
+
+    ssh_args = f"-p {port} -o StrictHostKeyChecking=accept-new "
+    if auth_type == "key" and key_path and os.path.exists(key_path):
+        ssh_args += f"-i '{key_path}' "
+
+    dest = f"{user}@{host}" if user else host
+    base_cmd = f"ssh {ssh_args}{dest}"
+
+    if auth_type == "password" and password:
+        return f"sshpass -p '{password}' {base_cmd}"
+    return base_cmd
+
+def read_field(win, y, x, width, initial_val="", is_pw=False):
+    val = list(str(initial_val))
+    pos = len(val)
+    curses.curs_set(1)
+
+    while True:
+        text = ("*" * len(val)) if is_pw else "".join(val)
+        display = text[:width].ljust(width)
+        win.addstr(y, x, display, curses.color_pair(3))
+        win.move(y, x + min(pos, width - 1))
+        win.refresh()
+
+        ch = win.getch()
+        if ch in [10, 13]:  # Enter
+            curses.curs_set(0)
+            return "".join(val)
+        elif ch == 27:  # ESC
+            curses.curs_set(0)
+            return None
+        elif ch in [curses.KEY_BACKSPACE, 127, 8]:
+            if pos > 0:
+                pos -= 1
+                val.pop(pos)
+        elif ch == curses.KEY_DC:  # Delete
+            if pos < len(val):
+                val.pop(pos)
+        elif ch == curses.KEY_LEFT:
+            if pos > 0:
+                pos -= 1
+        elif ch == curses.KEY_RIGHT:
+            if pos < len(val):
+                pos += 1
+        elif ch == curses.KEY_HOME:
+            pos = 0
+        elif ch == curses.KEY_END:
+            pos = len(val)
+        elif 32 <= ch <= 126:  # Printable ASCII
+            if len(val) < width:
+                val.insert(pos, chr(ch))
+                pos += 1
+
+def edit_host_dialog(stdscr, host_dict=None):
+    is_new = (host_dict is None)
+    h = dict(host_dict) if host_dict else {
+        "name": "New Server",
+        "host": "192.168.1.",
+        "user": "operator",
+        "port": 22,
+        "auth_type": "key",
+        "key_path": "~/.ssh/id_ed25519",
+        "password": ""
+    }
+
+    max_y, max_x = stdscr.getmaxyx()
+    win_h = 13
+    win_w = min(62, max_x - 4)
+    if win_w < 35 or win_h > max_y:
+        return None
+
+    start_y = max(1, (max_y - win_h) // 2)
+    start_x = max(1, (max_x - win_w) // 2)
+
+    dlg = curses.newwin(win_h, win_w, start_y, start_x)
+    dlg.keypad(True)
+
+    field_defs = [
+        ("name",      "Label Name ", str(h.get("name", ""))),
+        ("host",      "Host / IP  ", str(h.get("host", ""))),
+        ("user",      "User Name  ", str(h.get("user", "operator"))),
+        ("port",      "Port Number", str(h.get("port", 22))),
+        ("auth_type", "Auth (k/p) ", str(h.get("auth_type", "key"))),
+        ("secret",    "Key File   " if h.get("auth_type") != "password" else "Password   ",
+                      str(h.get("key_path" if h.get("auth_type") != "password" else "password", ""))),
+    ]
+
+    field_width = max(10, win_w - 20)
+    cur_values = [f[2] for f in field_defs]
+
+    def render_form(active_idx):
+        dlg.erase()
+        dlg.box()
+        dlg.bkgd(" ", curses.color_pair(1))
+        title = " [ ADD NEW SERVER ] " if is_new else " [ EDIT SERVER CONFIG ] "
+        dlg.addstr(0, max(2, (win_w - len(title)) // 2), title, curses.color_pair(2) | curses.A_BOLD)
+
+        for i, (_, label, _) in enumerate(field_defs):
+            y = 2 + i
+            is_active = (i == active_idx)
+            lbl_color = curses.color_pair(3) | curses.A_BOLD if is_active else curses.color_pair(2) | curses.A_BOLD
+            dlg.addstr(y, 2, f"{label}: ", lbl_color)
+
+            dlg.addstr(y, 2 + len(label) + 2, "[", curses.color_pair(2))
+            val = cur_values[i]
+            disp = ("*" * len(val)) if (i == 5 and cur_values[4].lower().startswith("p")) else val
+            disp = disp[:field_width].ljust(field_width)
+            val_color = curses.color_pair(3) if is_active else curses.color_pair(1)
+            dlg.addstr(y, 2 + len(label) + 3, disp, val_color)
+            dlg.addstr(y, 2 + len(label) + 3 + field_width, "]", curses.color_pair(2))
+
+        footer = "[Enter] Next/Confirm  [ESC] Cancel"
+        dlg.addstr(win_h - 2, max(2, (win_w - len(footer)) // 2), footer, curses.color_pair(2))
+        dlg.refresh()
+
+    for i in range(len(field_defs)):
+        if i == 5:
+            if cur_values[4].lower().startswith("p"):
+                field_defs[5] = ("secret", "Password   ", cur_values[5])
+            else:
+                field_defs[5] = ("secret", "Key File   ", cur_values[5])
+
+        render_form(i)
+        input_x = 2 + len(field_defs[i][1]) + 3
+        input_y = 2 + i
+
+        new_val = read_field(dlg, input_y, input_x, field_width, cur_values[i], is_pw=(i == 5 and cur_values[4].lower().startswith("p")))
+        if new_val is None:
+            return None
+        cur_values[i] = new_val.strip()
+
+    h["name"] = cur_values[0] if cur_values[0] else "Server"
+    h["host"] = cur_values[1] if cur_values[1] else "127.0.0.1"
+    h["user"] = cur_values[2] if cur_values[2] else "operator"
+    try:
+        h["port"] = int(cur_values[3])
+    except ValueError:
+        h["port"] = 22
+
+    auth_val = cur_values[4].lower()
+    if auth_val.startswith("p"):
+        h["auth_type"] = "password"
+        h["password"] = cur_values[5]
+        h["key_path"] = ""
+    else:
+        h["auth_type"] = "key"
+        h["key_path"] = cur_values[5] if cur_values[5] else "~/.ssh/id_ed25519"
+        h["password"] = ""
+
+    return h
+
+def main_loop(stdscr):
+    curses.curs_set(0)
+    stdscr.nodelay(False)
+    stdscr.keypad(True)
+
+    # Phosphor Colors
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_YELLOW, -1)             # Standard Amber
+    curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK) # High-Contrast Amber
+    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW) # Selected Highlight
+    curses.init_pair(4, curses.COLOR_RED, -1)                # Warning Red
+
+    selected_idx = 0
+
+    while True:
+        cfg = load_config()
+        hosts = cfg.get("hosts", [])
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+
+        # Header Box
+        header_text = " ⚡ FHAWX-SSH // RETRO AMBER CRT STATION "
+        stdscr.addstr(0, max(0, (max_x - len(header_text)) // 2), header_text, curses.color_pair(3) | curses.A_BOLD)
+        stdscr.addstr(1, 1, "─" * (max_x - 2), curses.color_pair(1))
+
+        # Instructions / Shortcut Bar
+        sub_text = "[Enter] Connect   [a] Add   [e] Edit   [d] Delete   [q] Exit"
+        stdscr.addstr(2, max(1, (max_x - len(sub_text)) // 2), sub_text, curses.color_pair(2) | curses.A_BOLD)
+        stdscr.addstr(3, 1, "─" * (max_x - 2), curses.color_pair(1))
+
+        if not hosts:
+            stdscr.addstr(6, 4, "[-] No servers configured. Press [a] to add a connection.", curses.color_pair(4))
+        else:
+            list_start_y = 5
+            max_visible = max(1, max_y - list_start_y - 2)
+
+            if selected_idx >= len(hosts):
+                selected_idx = max(0, len(hosts) - 1)
+
+            for i, target in enumerate(hosts[:max_visible]):
+                y = list_start_y + i
+                is_selected = (i == selected_idx)
+                prefix = " ► " if is_selected else "   "
+                name = target.get("name", "Unnamed")[:24].ljust(25)
+                endpoint = f"{target.get('user', '')}@{target.get('host', '')}:{target.get('port', 22)}"[:28].ljust(29)
+                auth = f"[{target.get('auth_type', 'key').upper()}]"
+
+                line_str = f"{prefix}{name} │ {endpoint} │ {auth}"
+                line_str = line_str[:max_x - 2]
+
+                attr = curses.color_pair(3) | curses.A_BOLD if is_selected else curses.color_pair(1)
+                stdscr.addstr(y, 1, line_str, attr)
+
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        if key in [ord('q'), ord('Q'), 27]: # Esc or q
+            break
+        elif key in [curses.KEY_UP, ord('k')]:
+            selected_idx = max(0, selected_idx - 1)
+        elif key in [curses.KEY_DOWN, ord('j')]:
+            if hosts:
+                selected_idx = min(len(hosts) - 1, selected_idx + 1)
+        elif key in [10, 13]: # Enter -> Connect in active pane!
+            if hosts and selected_idx < len(hosts):
+                target = hosts[selected_idx]
+                cmd = build_ssh_command(target)
+                curses.endwin()
+                os.system("clear")
+                print(f"\033[1;38;2;204;85;0m[⚡ CONNECTING TO {target.get('name')}...]\033[0m")
+                print(f"\033[90m$ {cmd}\033[0m\n")
+                subprocess.run(cmd, shell=True)
+                print("\n\033[1;38;2;204;85;0m[Session Closed. Returning to SSH Station...]\033[0m")
+                import time
+                time.sleep(1)
+                stdscr = curses.initscr()
+                curses.cbreak()
+                curses.noecho()
+                stdscr.keypad(True)
+        elif key in [ord('a'), ord('A')]:
+            new_h = edit_host_dialog(stdscr)
+            if new_h:
+                hosts.append(new_h)
+                save_config(cfg)
+                selected_idx = len(hosts) - 1
+        elif key in [ord('e'), ord('E')]:
+            if hosts and selected_idx < len(hosts):
+                edited = edit_host_dialog(stdscr, hosts[selected_idx])
+                if edited:
+                    hosts[selected_idx] = edited
+                    save_config(cfg)
+        elif key in [ord('d'), ord('D')]:
+            if hosts and selected_idx < len(hosts):
+                del hosts[selected_idx]
+                save_config(cfg)
+                selected_idx = max(0, min(selected_idx, len(hosts) - 1))
+
+def main():
+    curses.wrapper(main_loop)
+
+if __name__ == "__main__":
+    main()

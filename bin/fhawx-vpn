@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-VPN // INTERACTIVE WIREGUARD VPN MANAGER
+# Target: Fhawx-Deck & Chromebooks
+# Aesthetic: Burnt Orange (#CC5500 / #FF8C00)
+# ==============================================================================
+
+THEME_ORANGE="#CC5500"
+THEME_AMBER="#FF8C00"
+WG_DIR="$HOME/wireguard"
+mkdir -p "$WG_DIR"
+
+clear
+if command -v gum >/dev/null 2>&1; then
+    gum style --border rounded --border-foreground "$THEME_ORANGE" --foreground "$THEME_AMBER" --bold "  FHAWX-VPN │ WireGuard Manager  "
+else
+    echo "=== FHAWX-VPN │ WireGuard Manager ==="
+fi
+
+# Check active WireGuard tunnels
+ACTIVE_TUNNEL=$(sudo wg show interfaces 2>/dev/null || true)
+
+if [ -n "$ACTIVE_TUNNEL" ]; then
+    echo "[●] Active WireGuard Tunnel: $ACTIVE_TUNNEL"
+    sudo wg show "$ACTIVE_TUNNEL" 2>/dev/null || true
+    echo ""
+    if command -v gum >/dev/null 2>&1; then
+        ACTION=$(gum choose "1. Disconnect VPN ($ACTIVE_TUNNEL)" "2. View Handshake Status" "3. Return to Desktop")
+    else
+        select ACTION in "Disconnect VPN ($ACTIVE_TUNNEL)" "View Handshake Status" "Return to Desktop"; do break; done
+    fi
+
+    case "$ACTION" in
+        *"Disconnect VPN"*)
+            sudo wg-quick down "$ACTIVE_TUNNEL"
+            echo "WireGuard tunnel $ACTIVE_TUNNEL disconnected."
+            sleep 1
+            ;;
+        *"View Handshake Status"*)
+            clear
+            sudo wg
+            read -r -p "Press Enter to exit..."
+            ;;
+        *) exit 0 ;;
+    esac
+else
+    echo "[○] WireGuard is currently DISCONNECTED."
+    
+    # Search for .conf files
+    CONFIG_FILES=$(find /etc/wireguard "$WG_DIR" -maxdepth 2 -name "*.conf" 2>/dev/null || true)
+    
+    if [ -z "$CONFIG_FILES" ]; then
+        echo "[-] No WireGuard configuration (.conf) files found in ~/wireguard/ or /etc/wireguard/"
+        echo "Place your client .conf file into ~/wireguard/ and re-run this tool."
+        read -r -p "Press Enter to return..."
+        exit 0
+    fi
+    
+    if command -v gum >/dev/null 2>&1; then
+        SELECTED_CONF=$(echo "$CONFIG_FILES" | gum choose --header "Select WireGuard Config to Activate:")
+    else
+        SELECTED_CONF=$(echo "$CONFIG_FILES" | fzf --prompt="Select VPN Config > ")
+    fi
+    
+    if [ -n "$SELECTED_CONF" ]; then
+        echo "Activating tunnel: $(basename "$SELECTED_CONF")..."
+        sudo wg-quick up "$SELECTED_CONF"
+        if [ $? -eq 0 ]; then
+            echo "[✓] WireGuard Connected: $(basename "$SELECTED_CONF")"
+        else
+            echo "[-] Failed to bring up WireGuard interface."
+        fi
+        sleep 2
+    fi
+fi

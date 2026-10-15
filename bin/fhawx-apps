@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-APPS // AUTO-SPILLOVER COMMAND PALETTE & APP LAUNCHER
+# Target: Fhawx-Deck & Chromebooks
+# Triggered by: Alt + Space, F1, or Click on [⚡ APPS]
+# Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
+# Behavior: Always opens new apps in next available right-hand slot.
+#           Spills over to Workspace 2 if Workspace 1 is full.
+# ==============================================================================
+
+set -euo pipefail
+
+THEME_ORANGE="#CC5500"
+THEME_AMBER="#FF8C00"
+SCRIPTS_DIR="$HOME/scripts"
+mkdir -p "$SCRIPTS_DIR" "$HOME/Documents"
+
+# Detect interactive picker (gum preferred, fzf fallback)
+choose_item() {
+    local header="$1"
+    shift
+    if command -v gum >/dev/null 2>&1; then
+        gum choose \
+            --header.foreground "$THEME_AMBER" \
+            --header "$header" \
+            --cursor.foreground "$THEME_AMBER" \
+            --item.foreground "$THEME_ORANGE" \
+            -- "$@"
+    elif command -v fzf >/dev/null 2>&1; then
+        printf "%s\n" "$@" | fzf --prompt="$header > " --color="fg:#CC5500,hl:#FF8C00,pointer:#FF8C00"
+    else
+        select opt in "$@"; do
+            echo "$opt"
+            break
+        done
+    fi
+}
+
+# Auto-Spillover Dispatcher: Dispatches command into next available right-hand slot
+dispatch_app() {
+    local cmd="$1"
+    local cur_idx
+    cur_idx=$(tmux display-message -p "#{window_index}" 2>/dev/null || echo "1")
+    local other_idx=$(( cur_idx == 1 ? 2 : 1 ))
+    
+    local cur_panes
+    cur_panes=$(tmux list-panes -t "$cur_idx" 2>/dev/null | wc -l)
+    local other_panes
+    other_panes=$(tmux list-panes -t "$other_idx" 2>/dev/null | wc -l)
+
+    if [ "$cur_panes" -lt 2 ]; then
+        # Current workspace has space -> split right (split-window automatically focuses new pane)
+        tmux split-window -h -t "$cur_idx" "$cmd"
+        exit 0
+    elif [ "$other_panes" -lt 2 ]; then
+        # Current workspace full -> spill over to other workspace
+        if ! tmux select-window -t "$other_idx" 2>/dev/null; then
+            tmux new-window -t "$other_idx" -n "Ops" "bash"
+        fi
+        tmux split-window -h -t "$other_idx" "$cmd"
+        exit 0
+    else
+        # All 4 bays active
+        clear
+        if command -v gum >/dev/null 2>&1; then
+            gum style --border rounded --border-foreground "$THEME_AMBER" --foreground "$THEME_ORANGE" \
+                "⚠️ ALL 4 EXECUTION SLOTS ARE CURRENTLY IN USE" \
+                "Workspace 1: 2/2 Panes Active" \
+                "Workspace 2: 2/2 Panes Active" \
+                "" \
+                "Press [Alt + K] on any pane to terminate it before launching a new app."
+        else
+            echo "⚠️ All 4 execution slots in use. Press Alt+K to terminate a pane first."
+        fi
+        read -r -p "Press Enter to return..."
+        exit 0
+    fi
+}
+
+MENU_ITEMS=(
+    "1. [Action]   Toggle Split Screen (Alt+S)"
+    "2. [Action]   Switch Workspace (Alt+W)"
+    "3. [Action]   Kill Active Pane (Alt+K)"
+    "4. [Terminal] New Bash Shell (Split Right)"
+    "5. [Writing]  Daily Writer Note (micro)"
+    "6. [Connect]  SSH Station (fhawx-ssh)"
+    "7. [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
+    "8. [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
+    "9. [Audio]    Volume Control & Mixer (alsamixer)"
+    "10. [System]  System Resource Monitor (btop)"
+    "11. [Info]    System Telemetry (fastfetch)"
+    "12. [Scripts] Run Custom Script (~/scripts/)"
+)
+
+if command -v fhawx-install >/dev/null 2>&1 || [ -x "$HOME/.local/bin/fhawx-install" ]; then
+    MENU_ITEMS+=("13. [Install] Install Fhawx-Deck to Disk (fhawx-install)")
+fi
+
+MENU_ITEMS+=(
+    "14. [Help]    Command Cheatsheet (Pure-Alt Keys)"
+    "15. [Power]   Reboot or Shutdown System"
+    "0. [Cancel]   Exit Menu (ESC)"
+)
+
+CHOICE=$(choose_item "⚡ FHAWX-DECK COMMAND PALETTE (Alt+Space)" "${MENU_ITEMS[@]}")
+
+case "$CHOICE" in
+    *"Toggle Split Screen"*)
+        if [ "$(tmux list-panes | wc -l)" -eq 1 ]; then
+            tmux split-window -h "bash"
+        else
+            tmux kill-pane -t :.2
+        fi
+        exit 0
+        ;;
+    *"Switch Workspace"*)
+        ~/.local/bin/fhawx-workspace-toggle
+        exit 0
+        ;;
+    *"Kill Active Pane"*)
+        clear
+        exec "$HOME/.local/bin/fhawx-kill-pane"
+        ;;
+    *"New Bash Shell"*)
+        dispatch_app "bash"
+        ;;
+    *"Daily Writer Note"*)
+        NOTE_FILE="$HOME/Documents/Daily_Note.md"
+        if [ ! -f "$NOTE_FILE" ]; then
+            cat << 'EOF' > "$NOTE_FILE"
+# Daily Writer Note
+> 💡 Micro Shortcuts: [Ctrl+S] Save | [Ctrl+Q] Graceful Quit / Exit | [Ctrl+O] Open File | [Ctrl+Z] Undo
+
+EOF
+        fi
+        dispatch_app "micro '$NOTE_FILE'"
+        ;;
+    *"SSH Station"*)
+        dispatch_app "fhawx-ssh"
+        ;;
+    *"Wi-Fi Connection"*)
+        dispatch_app "fhawx-wifi"
+        ;;
+    *"WireGuard VPN"*)
+        dispatch_app "fhawx-vpn"
+        ;;
+    *"Volume Control"*)
+        dispatch_app "alsamixer"
+        ;;
+    *"Resource Monitor"*)
+        dispatch_app "btop"
+        ;;
+    *"System Telemetry"*)
+        dispatch_app "fastfetch; read -r -p 'Press Enter to close...'"
+        ;;
+    *"Install Fhawx-Deck"*)
+        dispatch_app "sudo fhawx-install"
+        ;;
+    *"Run Custom Script"*)
+        SCRIPT_FILES=$(find "$SCRIPTS_DIR" -maxdepth 1 -type f -executable 2>/dev/null || true)
+        if [ -z "$SCRIPT_FILES" ]; then
+            clear
+            if command -v gum >/dev/null 2>&1; then
+                gum style --border rounded --border-foreground "$THEME_ORANGE" --foreground "$THEME_AMBER" \
+                    "~/scripts is currently empty." \
+                    "Drop any executable bash/python scripts into ~/scripts/ and they will appear here!"
+            else
+                echo "~/scripts/ is empty. Place executable scripts there to run them."
+            fi
+            read -r -p "Press Enter to continue..."
+            exit 0
+        fi
+        
+        SCRIPT_NAMES=()
+        while IFS= read -r f; do
+            [ -n "$f" ] && SCRIPT_NAMES+=("$(basename "$f")")
+        done <<< "$SCRIPT_FILES"
+        SCRIPT_NAMES+=("[Back to Main Menu]")
+
+        CHOSEN_SCRIPT=$(choose_item "Select Script to Execute:" "${SCRIPT_NAMES[@]}")
+        if [ -n "$CHOSEN_SCRIPT" ] && [ "$CHOSEN_SCRIPT" != "[Back to Main Menu]" ]; then
+            dispatch_app "bash -c '$SCRIPTS_DIR/$CHOSEN_SCRIPT; exec bash'"
+        fi
+        ;;
+    *"Command Cheatsheet"*)
+        clear
+        if command -v gum >/dev/null 2>&1; then
+            gum style --border rounded --border-foreground "$THEME_AMBER" --foreground "$THEME_ORANGE" \
+                "⚡ FHAWX-DECK PURE-ALT CHEATSHEET" \
+                "" \
+                "  Alt + A     : Open Command Palette / App Launcher" \
+                "  Alt + Space : Open Command Palette (Alias)" \
+                "  Alt + W     : Toggle Workspace (Workspace 1 ◄► 2)" \
+                "  Alt + S     : Toggle Split (Single Fullscreen ◄► Dual Pane)" \
+                "  Alt + K     : Kill Active Pane (Defensive prompt, Enter cancels)" \
+                "  Alt + O     : Switch Focus (Left ◄► Right Pane - Remote friendly)" \
+                "  Alt + Tab   : Switch Focus (Left ◄► Right Pane)" \
+                "  Alt + Z     : Zoom / Expand Active Pane to 100%" \
+                "" \
+                "  Mouse: Click any pane to focus, drag border to resize."
+        else
+            echo "Alt+A = Menu | Alt+W = Workspace | Alt+S = Split | Alt+K = Kill | Alt+O = Focus"
+        fi
+        read -r -p "Press Enter to return..."
+        exit 0
+        ;;
+    *"Reboot or Shutdown"*)
+        ACTION=$(choose_item "Power Management:" "1. Reboot Computer" "2. Power Off Computer" "3. Cancel")
+        case "$ACTION" in
+            *"Reboot"*) sudo systemctl reboot ;;
+            *"Power Off"*) sudo systemctl poweroff ;;
+            *) exit 0 ;;
+        esac
+        ;;
+    *)
+        exit 0
+        ;;
+esac

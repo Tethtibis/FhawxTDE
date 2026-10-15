@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-STATUS-BAR // TELEMETRY PROVIDER FOR TMUX TOP PANEL
+# Target: Fhawx-Deck (Inspiron 1012) & Chromebooks
+# Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
+# ==============================================================================
+
+# 1. Real-time CPU Load from /proc/stat
+read -r _ u1 n1 s1 i1 _ < /proc/stat
+sleep 0.1
+read -r _ u2 n2 s2 i2 _ < /proc/stat
+t_diff=$(( (u2 + n2 + s2 + i2) - (u1 + n1 + s1 + i1) ))
+i_diff=$(( i2 - i1 ))
+if [ "$t_diff" -gt 0 ]; then
+    CPU_LOAD=$(( (t_diff - i_diff) * 100 / t_diff ))
+else
+    CPU_LOAD=0
+fi
+CPU_STR="#[fg=#FF8C00]CPU: ${CPU_LOAD}%"
+
+# 2. Network (Wi-Fi / Ethernet - Pure ASCII)
+NET_SSID=$(nmcli -t -f IN-USE,SSID dev wifi 2>/dev/null | awk -F: '$1=="*"{print $2}' | head -n 1)
+if [ -n "$NET_SSID" ]; then
+    NET_STR="#[fg=#FF8C00][Wi-Fi: $NET_SSID]"
+else
+    ETH_DEV=$(ip -br link show 2>/dev/null | awk '$1 ~ /^eth|^en/{if ($2=="UP") print $1}')
+    if [ -n "$ETH_DEV" ]; then
+        NET_STR="#[fg=#00FF00][ETH]"
+    else
+        NET_STR="#[fg=#774400][NET:OFF]"
+    fi
+fi
+
+# 3. WireGuard VPN Status (Zero-sudo sysfs/ip check)
+if ip -br link show 2>/dev/null | grep -iE "wg|wireguard" | grep -q "UP" || ls /sys/class/net/ 2>/dev/null | grep -qE '^wg'; then
+    VPN_STR="#[fg=#00FF00,bold][VPN:ON]"
+else
+    VPN_STR="#[fg=#774400][VPN:OFF]"
+fi
+
+# 4. Audio Volume (ALSA Master)
+VOL_INFO=$(amixer get Master 2>/dev/null | grep -oP '\[(on|off)\]|\[\d+%\]' | tr -d '[]' | tr '\n' ' ')
+if echo "$VOL_INFO" | grep -q "off"; then
+    VOL_STR="#[fg=#FF4444][MUTE]"
+else
+    VOL_PCT=$(echo "$VOL_INFO" | grep -oP '\d+%' | head -n 1)
+    if [ -n "$VOL_PCT" ]; then
+        VOL_STR="#[fg=#FF8C00]Vol: $VOL_PCT"
+    else
+        VOL_STR="#[fg=#774400]Vol: --"
+    fi
+fi
+
+# 5. Battery & Power Status (Dell BAT1 or Chromebook sysfs)
+BAT_DIR=$(find /sys/class/power_supply/ -maxdepth 1 -name "BAT*" 2>/dev/null | head -n 1)
+if [ -n "$BAT_DIR" ] && [ -f "$BAT_DIR/capacity" ]; then
+    BAT_CAP=$(cat "$BAT_DIR/capacity" 2>/dev/null || echo "0")
+    BAT_STAT=$(cat "$BAT_DIR/status" 2>/dev/null || echo "Discharging")
+    if [ "$BAT_STAT" = "Charging" ] || [ "$BAT_STAT" = "Full" ]; then
+        BAT_STR="#[fg=#00FF00]BAT: ${BAT_CAP}% ⚡"
+    elif [ "$BAT_CAP" -le 20 ]; then
+        BAT_STR="#[fg=#FF0000,bold]BAT: ${BAT_CAP}% ⚠"
+    else
+        BAT_STR="#[fg=#FF8C00]BAT: ${BAT_CAP}%"
+    fi
+else
+    BAT_STR="#[fg=#774400]PWR: AC"
+fi
+
+# 6. 12-Hour Clock (Exact FreshInstall Template Match: [ %I:%M %p ] %m/%d/%y)
+TIME_STR="#[bg=#CC5500,fg=#000000,bold] $(date "+[ %I:%M %p ] %m/%d/%y") "
+
+# Emit unified status line
+echo "${CPU_STR} #[fg=#774400]│ ${NET_STR} ${VPN_STR} #[fg=#774400]│ ${VOL_STR} #[fg=#774400]│ ${BAT_STR} ${TIME_STR}"

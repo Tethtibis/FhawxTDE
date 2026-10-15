@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.iso
+*.iso.sha256
+.DS_Store
+*.swp
+*.swo
+*~

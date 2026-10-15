@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-SESSION-INIT // WORKSPACE PROVISIONER & ATTACHER
+# Enforces strictly 2 Workspaces:
+#   Workspace 1 (Main): Clean single pane (terminal + fastfetch banner)
+#   Workspace 2 (Ops) : Clean single pane (terminal)
+# Dynamic Slot Matrix: Apps split to the right on demand.
+# ==============================================================================
+
+SESSION="fhawx-deck"
+NOTE_DIR="$HOME/Documents"
+mkdir -p "$NOTE_DIR" "$HOME/scripts"
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    # Create session with Workspace 1 (Main: 100% Full Width Single Pane)
+    tmux new-session -d -s "$SESSION" -n "Main" "clear; command -v fastfetch >/dev/null 2>&1 && fastfetch || true; exec bash"
+
+    # Create Workspace 2 (Ops: 100% Full Width Single Pane)
+    tmux new-window -t "$SESSION:2" -n "Ops" "bash"
+
+    # Focus Workspace 1, Pane 1
+    tmux select-window -t "$SESSION:1"
+    tmux select-pane -t "$SESSION:1.1"
+fi
+
+exec tmux attach-session -t "$SESSION"

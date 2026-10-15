@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-WIFI // INTERACTIVE TUI WI-FI MANAGER
+# Target: Fhawx-Deck & Chromebooks
+# Aesthetic: Burnt Orange (#CC5500 / #FF8C00)
+# ==============================================================================
+
+THEME_ORANGE="#CC5500"
+THEME_AMBER="#FF8C00"
+
+clear
+if command -v gum >/dev/null 2>&1; then
+    gum style --border rounded --border-foreground "$THEME_ORANGE" --foreground "$THEME_AMBER" --bold "  FHAWX-WIFI │ NetworkManager TUI  "
+else
+    echo "=== FHAWX-WIFI │ NetworkManager TUI ==="
+fi
+
+# Ensure Wi-Fi radio is enabled
+nmcli radio wifi on 2>/dev/null || true
+
+# Identify Wi-Fi interface
+WIFI_DEV=$(nmcli -t -f DEVICE,TYPE dev 2>/dev/null | awk -F: '$2=="wifi"{print $1}' | head -n 1)
+
+if [ -z "$WIFI_DEV" ]; then
+    echo "[-] No wireless interface detected on this hardware."
+    read -r -p "Press Enter to exit..."
+    exit 1
+fi
+
+echo "Scanning for networks on $WIFI_DEV..."
+SSID_LIST=$(nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY dev wifi list ifname "$WIFI_DEV" --rescan yes 2>/dev/null || true)
+
+if [ -z "$SSID_LIST" ]; then
+    echo "[-] No SSIDs found in range."
+    read -r -p "Press Enter to exit..."
+    exit 1
+fi
+
+# Format SSID list for picker
+FORMATTED_LIST=$(echo "$SSID_LIST" | awk -F: '{
+    in_use = ($1 == "*") ? "[CONNECTED] " : "            ";
+    ssid = ($2 == "") ? "<Hidden Network>" : $2;
+    printf "%s%-22s │ Signal: %3s%% │ Sec: %s\n", in_use, ssid, $3, $4
+}')
+
+if command -v gum >/dev/null 2>&1; then
+    SELECTED_LINE=$(echo "$FORMATTED_LIST" | gum choose --header "Select Wi-Fi Network:" --cursor-prefix "► ")
+else
+    SELECTED_LINE=$(echo "$FORMATTED_LIST" | fzf --prompt="Select Wi-Fi > ")
+fi
+
+if [ -z "$SELECTED_LINE" ]; then
+    exit 0
+fi
+
+CHOSEN_SSID=$(echo "$SELECTED_LINE" | awk -F'│' '{print $1}' | sed 's/\[CONNECTED\]//g' | xargs)
+SECURITY_TYPE=$(echo "$SELECTED_LINE" | awk -F'│' '{print $3}' | awk '{print $2}')
+
+if [ "$CHOSEN_SSID" = "<Hidden Network>" ]; then
+    if command -v gum >/dev/null 2>&1; then
+        CHOSEN_SSID=$(gum input --placeholder "Enter Hidden SSID Name:")
+    else
+        read -r -p "Enter Hidden SSID Name: " CHOSEN_SSID
+    fi
+fi
+
+if [ "$SECURITY_TYPE" = "--" ] || [ -z "$SECURITY_TYPE" ]; then
+    echo "Connecting to open network: $CHOSEN_SSID..."
+    nmcli dev wifi connect "$CHOSEN_SSID" ifname "$WIFI_DEV"
+else
+    if command -v gum >/dev/null 2>&1; then
+        WIFI_PASS=$(gum input --password --placeholder "Enter Password for $CHOSEN_SSID:")
+    else
+        read -s -r -p "Enter Password for $CHOSEN_SSID: " WIFI_PASS
+        echo ""
+    fi
+    nmcli dev wifi connect "$CHOSEN_SSID" password "$WIFI_PASS" ifname "$WIFI_DEV"
+fi
+
+if [ $? -eq 0 ]; then
+    IP_ADDR=$(ip -4 addr show "$WIFI_DEV" 2>/dev/null | awk '/inet /{print $2}')
+    echo "[✓] Connected successfully! IP: $IP_ADDR"
+else
+    echo "[-] Connection failed. Check credentials."
+fi
+
+sleep 2

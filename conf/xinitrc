@@ -1,0 +1,35 @@
+#!/bin/sh
+# ==============================================================================
+# FHAWX-DECK TDE // MICRO-X11 KIOSK SESSION (~38 MiB RAM)
+# Launches full-screen terminal running tmux with 100% native libinput touchpad
+# ==============================================================================
+
+# Suppress accessibility bus warnings in standalone X11
+export NO_AT_SPI=1
+
+# Black background
+xsetroot -solid "#000000"
+
+# Hide mouse cursor after 3 seconds of inactivity
+if command -v unclutter >/dev/null 2>&1; then
+    unclutter -idle 3 -root &
+fi
+
+# Launch minimal kiosk window manager to ensure 100% full-screen coverage
+if command -v matchbox-window-manager >/dev/null 2>&1; then
+    matchbox-window-manager -use_titlebar no &
+fi
+
+# Launch full-screen terminal executing the 2-workspace session
+if command -v xfce4-terminal >/dev/null 2>&1; then
+    exec xfce4-terminal \
+        --disable-server \
+        --hide-menubar \
+        --hide-borders \
+        --hide-toolbar \
+        --fullscreen \
+        --title="Fhawx-Deck" \
+        -e "$HOME/.local/bin/fhawx-session-init"
+else
+    exec xterm -fullscreen -e "$HOME/.local/bin/fhawx-session-init"
+fi
