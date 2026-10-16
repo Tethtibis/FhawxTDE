@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# FHAWX-DECK TDE // ZERO-DEPENDENCY NETWORK BANDWIDTH TEST
+# FHAWXTDE // ZERO-DEPENDENCY NETWORK BANDWIDTH TEST
 # Uses standard curl to test download throughput without Ookla/speedtest-cli
 # ==============================================================================
 

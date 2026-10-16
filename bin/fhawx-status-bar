@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # FHAWX-STATUS-BAR // TELEMETRY PROVIDER FOR TMUX TOP PANEL
-# Target: Fhawx-Deck (Inspiron 1012) & Chromebooks
+# Target: FhawxTDE (Inspiron 1012) & Chromebooks
 # Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
 # ==============================================================================
 

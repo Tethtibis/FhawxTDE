@@ -1,5 +1,5 @@
 /* ==============================================================================
- * FHAWX-DECK TDE // NETWORKMANAGER POLKIT OVERRIDE
+ * FHAWXTDE // NETWORKMANAGER POLKIT OVERRIDE
  * Grants members of group 'netdev' authority to configure Wi-Fi without password
  * ============================================================================== */
 polkit.addRule(function(action, subject) {

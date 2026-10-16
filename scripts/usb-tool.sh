@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # USB-TOOL // INTERACTIVE USB DRIVE MOUNTER & UNMOUNTER
-# Target: Fhawx-Deck TDE & Chromebooks
+# Target: FhawxTDE & Chromebooks
 # Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
 # Auto-detected by ~/scripts/ in Fhawx-Apps Command Palette (Ctrl+Space)
 # ==============================================================================
@@ -32,7 +32,7 @@ choose_item() {
 }
 
 echo -e "\033[38;2;204;85;0m================================================================================\033[0m"
-echo -e "\033[38;2;255;140;0m  USB STORAGE MANAGER // FHAWX-DECK TDE\033[0m"
+echo -e "\033[38;2;255;140;0m  USB STORAGE MANAGER // FHAWXTDE\033[0m"
 echo -e "\033[38;2;204;85;0m================================================================================\033[0m"
 
 # 1. Enumerate USB partitions

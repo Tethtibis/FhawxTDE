@@ -2,7 +2,7 @@
 """
 =============================================================================
 FHAWX-SSH // STREAMLINED RETRO AMBER CRT SSH MANAGER
-Target: Fhawx-Deck & Chromebooks
+Target: FhawxTDE & Chromebooks
 Aesthetic: Burnt Orange / Amber Phosphor CRT TUI
 Zero Quad-Panes: Runs directly in active pane, reconnects on exit.
 =============================================================================

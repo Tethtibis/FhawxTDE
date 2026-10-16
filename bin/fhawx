@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX // ON-DEMAND TERMINAL DESKTOP ENVIRONMENT ("DOS SHELL" LAUNCHER)
+# Usage:
+#   fhawx          -> Launch or re-attach to FhawxTDE cockpit (in any terminal/SSH)
+#   fhawx detach   -> Minimize FhawxTDE and return to normal shell (Alt+Q)
+#   fhawx stop     -> Shut down FhawxTDE background session completely
+#   fhawx status   -> Check if FhawxTDE session is running in the background
+# ==============================================================================
+
+set -euo pipefail
+
+SOCKET="fhawx"
+SESSION="fhawxTDE"
+CONF_FILE="$HOME/.config/fhawx/tmux.conf"
+[ ! -f "$CONF_FILE" ] && [ -f "$HOME/.tmux.conf" ] && CONF_FILE="$HOME/.tmux.conf"
+
+ORANGE="\033[38;2;204;85;0m"
+AMBER="\033[38;2;255;140;0m"
+RESET="\033[0m"
+
+cmd="${1:-start}"
+
+case "$cmd" in
+    stop|exit|kill|quit)
+        if tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+            tmux -L "$SOCKET" kill-server 2>/dev/null || true
+            echo -e "${AMBER}[✓] FhawxTDE session shut down cleanly.${RESET}"
+        else
+            echo -e "${ORANGE}[*] FhawxTDE is not currently running.${RESET}"
+        fi
+        exit 0
+        ;;
+    detach|d)
+        tmux -L "$SOCKET" detach-client 2>/dev/null || true
+        exit 0
+        ;;
+    status)
+        if tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+            echo -e "${AMBER}[⚡] FhawxTDE is ACTIVE in the background.${RESET} Type 'fhawx' (or 'tde') to attach."
+        else
+            echo -e "${ORANGE}[*] FhawxTDE is STOPPED.${RESET} Type 'fhawx' (or 'tde') to start."
+        fi
+        exit 0
+        ;;
+    -h|--help|help)
+        echo -e "${AMBER}⚡ FHAWXTDE // On-Demand Terminal Desktop Environment${RESET}"
+        echo -e "${ORANGE}Usage:${RESET}"
+        echo -e "  fhawx          Launch or re-attach to FhawxTDE (works locally or over SSH)"
+        echo -e "  fhawx stop     Shut down the FhawxTDE background session"
+        echo -e "  fhawx status   Check if FhawxTDE is running"
+        echo -e ""
+        echo -e "${ORANGE}Inside FhawxTDE:${RESET}"
+        echo -e "  Alt + A        Open App Launcher & Command Palette"
+        echo -e "  Alt + W        Switch Workspace (1 ◄► 2)"
+        echo -e "  Alt + S        Toggle Split Screen (1 Pane ◄► 2 Panes)"
+        echo -e "  Alt + Q        Quick Detach back to normal command prompt"
+        exit 0
+        ;;
+esac
+
+# Prevent recursive nesting if user types 'fhawx' while already inside FhawxTDE
+if [[ "${TMUX:-}" == *"/$SOCKET,"* ]]; then
+    echo -e "${AMBER}[!] You are already inside the FhawxTDE cockpit.${RESET}"
+    echo -e "${ORANGE}    Press [Alt+A] for the Command Palette, or [Alt+Q] to return to your normal shell.${RESET}"
+    exit 0
+fi
+
+mkdir -p "$HOME/Documents" "$HOME/scripts"
+
+TMUX_ARGS=(-L "$SOCKET")
+[ -f "$CONF_FILE" ] && TMUX_ARGS+=(-f "$CONF_FILE")
+
+if ! tmux "${TMUX_ARGS[@]}" has-session -t "$SESSION" 2>/dev/null; then
+    # Provision Workspace 1 (Main: 100% Full Width Single Pane + Fastfetch Banner)
+    env -u TMUX tmux "${TMUX_ARGS[@]}" new-session -d -s "$SESSION" -n "Main" \
+        "clear; command -v fastfetch >/dev/null 2>&1 && fastfetch || true; exec bash"
+
+    # Provision Workspace 2 (Ops: 100% Full Width Single Pane)
+    tmux -L "$SOCKET" new-window -t "$SESSION:2" -n "Ops" "bash"
+
+    # Focus Workspace 1, Pane 1
+    tmux -L "$SOCKET" select-window -t "$SESSION:1"
+    tmux -L "$SOCKET" select-pane -t "$SESSION:1.1"
+fi
+
+# Unset TMUX on attach so switching from a standard tmux session works cleanly
+exec env -u TMUX tmux "${TMUX_ARGS[@]}" attach-session -t "$SESSION"

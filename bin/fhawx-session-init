@@ -1,36 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# FHAWX-SESSION-INIT // WORKSPACE PROVISIONER & ATTACHER
-# Enforces strictly 2 Workspaces:
-#   Workspace 1 (Main): Clean single pane (terminal + fastfetch banner)
-#   Workspace 2 (Ops) : Clean single pane (terminal)
-# Dynamic Slot Matrix: Apps split to the right on demand.
+# FHAWX-SESSION-INIT // BACKWARD-COMPATIBLE ENTRYPOINT WRAPPER
+# Delegates directly to the unified 'fhawx' launcher.
 # ==============================================================================
 
-SESSION="fhawx-deck"
-NOTE_DIR="$HOME/Documents"
-mkdir -p "$NOTE_DIR" "$HOME/scripts"
-
-# Detect Direct Installer Boot Option
-if grep -qE "fhawx.install|fhawx-install" /proc/cmdline 2>/dev/null; then
-    echo -e "\033[38;2;204;85;0m[⚡ LAUNCHING FHAWX-DECK DIRECT TERMINAL INSTALLER...]\033[0m"
-    if [ -x /usr/local/bin/fhawx-install ]; then
-        sudo /usr/local/bin/fhawx-install || true
-    elif [ -x "$HOME/.local/bin/fhawx-install" ]; then
-        sudo "$HOME/.local/bin/fhawx-install" || true
-    fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/fhawx" ]; then
+    exec "$SCRIPT_DIR/fhawx" "$@"
+elif command -v fhawx >/dev/null 2>&1; then
+    exec fhawx "$@"
+else
+    exec "$HOME/.local/bin/fhawx" "$@"
 fi
-
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-    # Create session with Workspace 1 (Main: 100% Full Width Single Pane)
-    tmux new-session -d -s "$SESSION" -n "Main" "clear; command -v fastfetch >/dev/null 2>&1 && fastfetch || true; exec bash"
-
-    # Create Workspace 2 (Ops: 100% Full Width Single Pane)
-    tmux new-window -t "$SESSION:2" -n "Ops" "bash"
-
-    # Focus Workspace 1, Pane 1
-    tmux select-window -t "$SESSION:1"
-    tmux select-pane -t "$SESSION:1.1"
-fi
-
-exec tmux attach-session -t "$SESSION"

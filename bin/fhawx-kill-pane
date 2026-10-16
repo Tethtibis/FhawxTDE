@@ -8,7 +8,8 @@
 
 set -euo pipefail
 
-PANE_COUNT=$(tmux list-panes | wc -l)
+TMUX_CMD=(tmux -L fhawx)
+PANE_COUNT=$("${TMUX_CMD[@]}" list-panes | wc -l)
 
 # If only 1 pane in the window, check if user really wants to close the last pane
 if [ "$PANE_COUNT" -le 1 ]; then
@@ -21,7 +22,6 @@ fi
 CONFIRM="Cancel"
 
 if command -v gum >/dev/null 2>&1; then
-    # Gum choose with Cancel pre-selected (top position)
     CONFIRM=$(gum choose \
         --header.foreground "#FF8C00" \
         --header "$HEADER" \
@@ -31,15 +31,13 @@ if command -v gum >/dev/null 2>&1; then
         "1. [ Cancel ] (Keep working)" \
         "2. [ KILL PANE ] (Terminate process)")
 elif command -v dialog >/dev/null 2>&1; then
-    # Dialog with defaultno flag (cursor on NO by default)
-    if dialog --defaultno --title " FHAWX TERMINATOR " --yesno "$HEADER" 7 50; then
+    if dialog --defaultno --title " FHAWXTDE TERMINATOR " --yesno "$HEADER" 7 50; then
         CONFIRM="KILL"
     else
         CONFIRM="Cancel"
     fi
     clear
 else
-    # Raw shell fallback
     echo "$HEADER"
     read -r -p "Type 'yes' to kill active pane: " answer
     [ "$answer" = "yes" ] && CONFIRM="KILL"
@@ -48,14 +46,13 @@ fi
 case "$CONFIRM" in
     *"KILL"*|*"Kill"*)
         if [ "$PANE_COUNT" -gt 1 ]; then
-            tmux kill-pane
+            "${TMUX_CMD[@]}" kill-pane
         else
             # If last pane, respawn a pristine bash shell rather than killing the window
-            tmux respawn-pane -k "bash"
+            "${TMUX_CMD[@]}" respawn-pane -k "bash"
         fi
         ;;
     *)
-        # Canceled - exit cleanly
         exit 0
         ;;
 esac

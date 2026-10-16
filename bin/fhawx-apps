@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # FHAWX-APPS // AUTO-SPILLOVER COMMAND PALETTE & APP LAUNCHER
-# Target: Fhawx-Deck & Chromebooks
-# Triggered by: Alt + Space, F1, or Click on [⚡ APPS]
+# Target: FhawxTDE (Local Terminals, SSH Sessions, & Netbooks)
+# Triggered by: Alt + A, Alt + Space, F1, or Click on [⚡ APPS]
 # Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
 # Behavior: Always opens new apps in next available right-hand slot.
 #           Spills over to Workspace 2 if Workspace 1 is full.
@@ -10,6 +10,7 @@
 
 set -euo pipefail
 
+TMUX_CMD=(tmux -L fhawx)
 THEME_ORANGE="#CC5500"
 THEME_AMBER="#FF8C00"
 SCRIPTS_DIR="$HOME/scripts"
@@ -40,24 +41,24 @@ choose_item() {
 dispatch_app() {
     local cmd="$1"
     local cur_idx
-    cur_idx=$(tmux display-message -p "#{window_index}" 2>/dev/null || echo "1")
+    cur_idx=$("${TMUX_CMD[@]}" display-message -p "#{window_index}" 2>/dev/null || echo "1")
     local other_idx=$(( cur_idx == 1 ? 2 : 1 ))
     
     local cur_panes
-    cur_panes=$(tmux list-panes -t "$cur_idx" 2>/dev/null | wc -l)
+    cur_panes=$("${TMUX_CMD[@]}" list-panes -t "$cur_idx" 2>/dev/null | wc -l)
     local other_panes
-    other_panes=$(tmux list-panes -t "$other_idx" 2>/dev/null | wc -l)
+    other_panes=$("${TMUX_CMD[@]}" list-panes -t "$other_idx" 2>/dev/null | wc -l)
 
     if [ "$cur_panes" -lt 2 ]; then
         # Current workspace has space -> split right (split-window automatically focuses new pane)
-        tmux split-window -h -t "$cur_idx" "$cmd"
+        "${TMUX_CMD[@]}" split-window -h -t "$cur_idx" "$cmd"
         exit 0
     elif [ "$other_panes" -lt 2 ]; then
         # Current workspace full -> spill over to other workspace
-        if ! tmux select-window -t "$other_idx" 2>/dev/null; then
-            tmux new-window -t "$other_idx" -n "Ops" "bash"
+        if ! "${TMUX_CMD[@]}" select-window -t "$other_idx" 2>/dev/null; then
+            "${TMUX_CMD[@]}" new-window -t "$other_idx" -n "Ops" "bash"
         fi
-        tmux split-window -h -t "$other_idx" "$cmd"
+        "${TMUX_CMD[@]}" split-window -h -t "$other_idx" "$cmd"
         exit 0
     else
         # All 4 bays active
@@ -78,38 +79,33 @@ dispatch_app() {
 }
 
 MENU_ITEMS=(
-    "1. [Action]   Toggle Split Screen (Alt+S)"
-    "2. [Action]   Switch Workspace (Alt+W)"
-    "3. [Action]   Kill Active Pane (Alt+K)"
-    "4. [Terminal] New Bash Shell (Split Right)"
-    "5. [Writing]  Daily Writer Note (micro)"
-    "6. [Connect]  SSH Station (fhawx-ssh)"
-    "7. [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
-    "8. [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
-    "9. [Audio]    Volume Control & Mixer (alsamixer)"
-    "10. [System]  System Resource Monitor (btop)"
-    "11. [Info]    System Telemetry (fastfetch)"
-    "12. [Scripts] Run Custom Script (~/scripts/)"
+    "1.  [Action]   Toggle Split Screen (Alt+S)"
+    "2.  [Action]   Switch Workspace (Alt+W)"
+    "3.  [Action]   Kill Active Pane (Alt+K)"
+    "4.  [Terminal] New Bash Shell (Split Right)"
+    "5.  [Writing]  Daily Writer Note (micro)"
+    "6.  [Connect]  SSH Station (fhawx-ssh)"
+    "7.  [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
+    "8.  [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
+    "9.  [Audio]    Volume Control & Mixer (alsamixer)"
+    "10. [System]   System Resource Monitor (btop)"
+    "11. [Info]     System Telemetry (fastfetch)"
+    "12. [Scripts]  Run Custom Script (~/scripts/)"
+    "13. [Help]     Command Cheatsheet (Pure-Alt Keys)"
+    "14. [Leave]    Minimize to Normal Shell (Alt+Q)"
+    "15. [Exit]     Shut Down FhawxTDE Session"
+    "16. [Power]    Reboot or Shutdown Computer"
+    "0.  [Cancel]   Exit Menu (ESC)"
 )
 
-if command -v fhawx-install >/dev/null 2>&1 || [ -x "$HOME/.local/bin/fhawx-install" ]; then
-    MENU_ITEMS+=("13. [Install] Install Fhawx-Deck to Disk (fhawx-install)")
-fi
-
-MENU_ITEMS+=(
-    "14. [Help]    Command Cheatsheet (Pure-Alt Keys)"
-    "15. [Power]   Reboot or Shutdown System"
-    "0. [Cancel]   Exit Menu (ESC)"
-)
-
-CHOICE=$(choose_item "⚡ FHAWX-DECK COMMAND PALETTE (Alt+Space)" "${MENU_ITEMS[@]}")
+CHOICE=$(choose_item "⚡ FHAWXTDE COMMAND PALETTE (Alt+A)" "${MENU_ITEMS[@]}")
 
 case "$CHOICE" in
     *"Toggle Split Screen"*)
-        if [ "$(tmux list-panes | wc -l)" -eq 1 ]; then
-            tmux split-window -h "bash"
+        if [ "$("${TMUX_CMD[@]}" list-panes | wc -l)" -eq 1 ]; then
+            "${TMUX_CMD[@]}" split-window -h "bash"
         else
-            tmux kill-pane -t :.2
+            "${TMUX_CMD[@]}" kill-pane -t :.2
         fi
         exit 0
         ;;
@@ -153,10 +149,6 @@ EOF
     *"System Telemetry"*)
         dispatch_app "fastfetch; read -r -p 'Press Enter to close...'"
         ;;
-    *"Install Fhawx-Deck"*)
-        tmux new-window -n "Installer" "sudo fhawx-install"
-        exit 0
-        ;;
     *"Run Custom Script"*)
         SCRIPT_FILES=$(find "$SCRIPTS_DIR" -maxdepth 1 -type f -executable 2>/dev/null || true)
         if [ -z "$SCRIPT_FILES" ]; then
@@ -187,26 +179,38 @@ EOF
         clear
         if command -v gum >/dev/null 2>&1; then
             gum style --border rounded --border-foreground "$THEME_AMBER" --foreground "$THEME_ORANGE" \
-                "⚡ FHAWX-DECK PURE-ALT CHEATSHEET" \
+                "⚡ FHAWXTDE PURE-ALT CHEATSHEET" \
                 "" \
                 "  Alt + A     : Open Command Palette / App Launcher" \
                 "  Alt + Space : Open Command Palette (Alias)" \
                 "  Alt + W     : Toggle Workspace (Workspace 1 ◄► 2)" \
                 "  Alt + S     : Toggle Split (Single Fullscreen ◄► Dual Pane)" \
                 "  Alt + K     : Kill Active Pane (Defensive prompt, Enter cancels)" \
-                "  Alt + O     : Switch Focus (Left ◄► Right Pane - Remote friendly)" \
+                "  Alt + O     : Switch Focus (Left ◄► Right Pane - SSH/Remote safe)" \
                 "  Alt + Tab   : Switch Focus (Left ◄► Right Pane)" \
                 "  Alt + Z     : Zoom / Expand Active Pane to 100%" \
+                "  Alt + Q     : Minimize FhawxTDE back to normal shell (type 'fhawx' to return)" \
                 "" \
-                "  Mouse: Click any pane to focus, drag border to resize."
+                "  Mouse: Click any pane to focus, drag border to resize (works over SSH!)."
         else
-            echo "Alt+A = Menu | Alt+W = Workspace | Alt+S = Split | Alt+K = Kill | Alt+O = Focus"
+            echo "Alt+A = Menu | Alt+W = Workspace | Alt+S = Split | Alt+K = Kill | Alt+O = Focus | Alt+Q = Leave to Shell"
         fi
         read -r -p "Press Enter to return..."
         exit 0
         ;;
+    *"Minimize to Normal Shell"*)
+        "${TMUX_CMD[@]}" detach-client
+        exit 0
+        ;;
+    *"Shut Down FhawxTDE"*)
+        CONFIRM_EXIT=$(choose_item "Shut down all FhawxTDE panes and return to normal shell?" "1. [ Cancel ] (Keep working)" "2. [ SHUT DOWN FHAWXTDE ]")
+        if [[ "$CONFIRM_EXIT" == *"SHUT DOWN"* ]]; then
+            "${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+        fi
+        exit 0
+        ;;
     *"Reboot or Shutdown"*)
-        ACTION=$(choose_item "Power Management:" "1. Reboot Computer" "2. Power Off Computer" "3. Cancel")
+        ACTION=$(choose_item "Power Management:" "1. Cancel" "2. Reboot Computer" "3. Power Off Computer")
         case "$ACTION" in
             *"Reboot"*) sudo systemctl reboot ;;
             *"Power Off"*) sudo systemctl poweroff ;;

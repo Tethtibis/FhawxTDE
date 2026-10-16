@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # FHAWX-VPN // INTERACTIVE WIREGUARD VPN MANAGER
-# Target: Fhawx-Deck & Chromebooks
+# Target: FhawxTDE & Chromebooks
 # Aesthetic: Burnt Orange (#CC5500 / #FF8C00)
 # ==============================================================================
 

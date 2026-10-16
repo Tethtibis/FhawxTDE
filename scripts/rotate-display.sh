@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# FHAWX-DECK TDE // 2-IN-1 SCREEN & TOUCHSCREEN ROTATION SUITE
+# FHAWXTDE // 2-IN-1 SCREEN & TOUCHSCREEN ROTATION SUITE
 # Aligns xrandr display with xinput Coordinate Transformation Matrix
 # ==============================================================================
 

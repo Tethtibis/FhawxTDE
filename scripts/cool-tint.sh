@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# FHAWX-DECK TDE // DISPLAY COLOR CALIBRATOR (COOL TINT FIX)
+# FHAWXTDE // DISPLAY COLOR CALIBRATOR (COOL TINT FIX)
 # Neutralizes yellow/warm tint on budget TN netbook panels
 # ==============================================================================
 
