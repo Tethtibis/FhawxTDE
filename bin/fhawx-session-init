@@ -11,6 +11,16 @@ SESSION="fhawx-deck"
 NOTE_DIR="$HOME/Documents"
 mkdir -p "$NOTE_DIR" "$HOME/scripts"
 
+# Detect Direct Installer Boot Option
+if grep -qE "fhawx.install|fhawx-install" /proc/cmdline 2>/dev/null; then
+    echo -e "\033[38;2;204;85;0m[⚡ LAUNCHING FHAWX-DECK DIRECT TERMINAL INSTALLER...]\033[0m"
+    if [ -x /usr/local/bin/fhawx-install ]; then
+        sudo /usr/local/bin/fhawx-install || true
+    elif [ -x "$HOME/.local/bin/fhawx-install" ]; then
+        sudo "$HOME/.local/bin/fhawx-install" || true
+    fi
+fi
+
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     # Create session with Workspace 1 (Main: 100% Full Width Single Pane)
     tmux new-session -d -s "$SESSION" -n "Main" "clear; command -v fastfetch >/dev/null 2>&1 && fastfetch || true; exec bash"

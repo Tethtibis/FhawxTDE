@@ -400,7 +400,7 @@ menuentry "🚀 Fhawx-Deck TDE // Copy to RAM (toram)" {
 }
 
 menuentry "💿 Fhawx-Deck TDE // Direct Terminal Installer (fhawx-install)" {
-    linux /live/vmlinuz boot=live components quiet splash systemd.unit=multi-user.target username=fhawx hostname=fhawx-deck
+    linux /live/vmlinuz boot=live components fhawx.install=1 quiet splash username=fhawx hostname=fhawx-deck
     initrd /live/initrd.img
 }
 EOF

@@ -154,7 +154,8 @@ EOF
         dispatch_app "fastfetch; read -r -p 'Press Enter to close...'"
         ;;
     *"Install Fhawx-Deck"*)
-        dispatch_app "sudo fhawx-install"
+        tmux new-window -n "Installer" "sudo fhawx-install"
+        exit 0
         ;;
     *"Run Custom Script"*)
         SCRIPT_FILES=$(find "$SCRIPTS_DIR" -maxdepth 1 -type f -executable 2>/dev/null || true)
