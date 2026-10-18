@@ -72,16 +72,21 @@ TMUX_ARGS=(-L "$SOCKET")
 [ -f "$CONF_FILE" ] && TMUX_ARGS+=(-f "$CONF_FILE")
 
 if ! tmux "${TMUX_ARGS[@]}" has-session -t "$SESSION" 2>/dev/null; then
+    if [ "${TERM:-}" = "linux" ] && [ -f "$HOME/.config/fastfetch/fhawx_logo_ascii.txt" ]; then
+        FF_CMD="fastfetch --logo ~/.config/fastfetch/fhawx_logo_ascii.txt --logo-type file-raw"
+    else
+        FF_CMD="fastfetch"
+    fi
     # Provision Workspace 1 (Main: 100% Full Width Single Pane + Fastfetch Banner)
-    env -u TMUX tmux "${TMUX_ARGS[@]}" new-session -d -s "$SESSION" -n "Main" \
-        "clear; command -v fastfetch >/dev/null 2>&1 && fastfetch || true; exec bash"
+    env -u TMUX tmux "${TMUX_ARGS[@]}" new-session -d -x 100 -y 30 -s "$SESSION" -n "Main" \
+        "clear; command -v fastfetch >/dev/null 2>&1 && $FF_CMD || true; exec bash"
 
     # Provision Workspace 2 (Ops: 100% Full Width Single Pane)
     tmux -L "$SOCKET" new-window -t "$SESSION:2" -n "Ops" "bash"
 
     # Focus Workspace 1, Pane 1
     tmux -L "$SOCKET" select-window -t "$SESSION:1"
-    tmux -L "$SOCKET" select-pane -t "$SESSION:1.1"
+    tmux -L "$SOCKET" select-pane -t "$SESSION:1.1" 2>/dev/null || tmux -L "$SOCKET" select-pane -t "$SESSION:1.0" 2>/dev/null || true
 fi
 
 # Unset TMUX on attach so switching from a standard tmux session works cleanly

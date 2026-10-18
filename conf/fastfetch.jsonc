@@ -3,7 +3,7 @@
   "logo": {
     "source": "~/.config/fastfetch/fhawx_logo.txt",
     "type": "file-raw",
-    "position": "top",
+    "position": "left",
     "padding": {
       "top": 1,
       "left": 2,
