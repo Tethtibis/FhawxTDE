@@ -114,6 +114,11 @@ All core desktop operations are bound to simple, single-modifier **Alt + Key** m
 * Embedded top status bar showing live CPU% delta sampling (`/proc/stat`), active network link (`[ETH]`, `[Wi-Fi]`, `[NET:OFF]`), VPN state, audio volume, and battery/AC telemetry.
 * Custom Fastfetch configuration featuring the **Fhawx Trinity Glyph** rendered in a 76×68 Unicode micro-dot matrix.
 
+### 6. 🃏 Klondike Solitaire (`fhawx-solitaire`)
+* Zero-dependency Python 3 `curses` implementation of **PySolFC-style Frictionless Klondike** (1-card draw, unlimited redeals, no score or timer distractions).
+* **GameBoy Pocket / Slyly Monochrome Card Geometry:** True **9×7 rectangular cards** using high-luma stipple dithering (`░`) for Red suits (`♥`, `♦`), low-luma shaded dot-matrix (`·`) for Black suits (`♠`, `♣`), and braided geometric lattice (`╬═╬`) for face-down backs.
+* **Smart Auto-Drop & Deadlock Solver:** Automatic foundation cascading (with pin protection when pulling cards down from foundations), right-click / double-click / 1-click quick-advance, 32-step atomic undo (`U`), and a bounded BFS deadlock analyzer that immediately alerts (`[ ! STUCK ! ]`) when no constructive moves remain.
+
 ---
 
 ## 📄 License

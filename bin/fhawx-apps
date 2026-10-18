@@ -84,17 +84,18 @@ MENU_ITEMS=(
     "3.  [Action]   Kill Active Pane (Alt+K)"
     "4.  [Terminal] New Bash Shell (Split Right)"
     "5.  [Writing]  Daily Writer Note (micro)"
-    "6.  [Connect]  SSH Station (fhawx-ssh)"
-    "7.  [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
-    "8.  [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
-    "9.  [Audio]    Volume Control & Mixer (alsamixer)"
-    "10. [System]   System Resource Monitor (btop)"
-    "11. [Info]     System Telemetry (fastfetch)"
-    "12. [Scripts]  Run Custom Script (~/scripts/)"
-    "13. [Help]     Command Cheatsheet (Pure-Alt Keys)"
-    "14. [Leave]    Minimize to Normal Shell (Alt+Q)"
-    "15. [Exit]     Shut Down FhawxTDE Session"
-    "16. [Power]    Reboot or Shutdown Computer"
+    "6.  [Focus]    Klondike Solitaire (fhawx-solitaire)"
+    "7.  [Connect]  SSH Station (fhawx-ssh)"
+    "8.  [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
+    "9.  [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
+    "10. [Audio]    Volume Control & Mixer (alsamixer)"
+    "11. [System]   System Resource Monitor (btop)"
+    "12. [Info]     System Telemetry (fastfetch)"
+    "13. [Scripts]  Run Custom Script (~/scripts/)"
+    "14. [Help]     Command Cheatsheet (Pure-Alt Keys)"
+    "15. [Leave]    Minimize to Normal Shell (Alt+Q)"
+    "16. [Exit]     Shut Down FhawxTDE Session"
+    "17. [Power]    Reboot or Shutdown Computer"
     "0.  [Cancel]   Exit Menu (ESC)"
 )
 
@@ -130,6 +131,10 @@ case "$CHOICE" in
 EOF
         fi
         dispatch_app "micro '$NOTE_FILE'"
+        ;;
+    *"Klondike Solitaire"*)
+        # Solitaire uses full-size 9x7 cards (requires >=72 cols); auto-zoom if launched in a split pane
+        dispatch_app "bash -c 'tmux -L fhawx resize-pane -Z 2>/dev/null || true; fhawx-solitaire'"
         ;;
     *"SSH Station"*)
         dispatch_app "fhawx-ssh"

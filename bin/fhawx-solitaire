@@ -1,0 +1,1168 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+FHAWX-SOLITAIRE // FRICTIONLESS KLONDIKE TUI (PYSOLFC / SLYLY MONOCHROME SPEC)
+Target: FhawxTDE (Local Terminals, SSH Sessions, & Netbooks)
+Aesthetic: Monochromatic Burnt Orange (#CC5500) & Bright Amber (#FF8C00)
+           GameBoy Pocket / Slyly Dithered Rectangular Card Geometry (9x7)
+Architecture: 100% Zero-Pip Python 3 Standard Library (curses)
+==============================================================================
+"""
+
+import os
+import sys
+import time
+import copy
+import random
+import curses
+from collections import deque
+
+# ==============================================================================
+# MODULE 1: CORE KLONDIKE STATE & UNDO RING BUFFER (StateEngine)
+# ==============================================================================
+
+SUITS = ("♠", "♥", "♣", "♦")  # 0: Spades, 1: Hearts, 2: Clubs, 3: Diamonds
+SUIT_NAMES = ("Spades", "Hearts", "Clubs", "Diamonds")
+RANKS = (None, "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+
+MAX_UNDO_HISTORY = 32
+MIN_COLS = 72
+MIN_ROWS = 26
+CARD_W = 9
+CARD_H = 7
+
+
+class Card:
+    __slots__ = ("suit", "rank", "face_up")
+
+    def __init__(self, suit: int, rank: int, face_up: bool = False):
+        self.suit = suit  # 0..3
+        self.rank = rank  # 1..13
+        self.face_up = face_up
+
+    @property
+    def is_red(self) -> bool:
+        return self.suit in (1, 3)  # Hearts, Diamonds
+
+    @property
+    def id_key(self) -> tuple:
+        return (self.suit, self.rank)
+
+    @property
+    def rank_str(self) -> str:
+        return RANKS[self.rank]
+
+    @property
+    def suit_str(self) -> str:
+        return SUITS[self.suit]
+
+    def __repr__(self) -> str:
+        state = "" if self.face_up else "?"
+        return f"{self.rank_str}{self.suit_str}{state}"
+
+
+class GameState:
+    def __init__(self, seed: int = None):
+        self.seed = seed if seed is not None else random.randrange(1_000_000_000)
+        self.stock = []               # List[Card] (face_up=False)
+        self.waste = []               # List[Card] (face_up=True)
+        self.foundations = [[], [], [], []]  # 4 piles (0:♠, 1:♥, 2:♣, 3:♦)
+        self.tableau = [[] for _ in range(7)]  # 7 columns
+        self.pinned_cards = set()     # Set of (suit, rank) pulled from foundation (exempt from auto-drop)
+        self.undo_stack = deque(maxlen=MAX_UNDO_HISTORY)
+        self.status = "PLAYING"       # PLAYING | STUCK | VICTORY
+        self.last_action_msg = "New game dealt. Right-click (or double-click) any card to auto-advance."
+        self.one_click_mode = False   # When True, single left-click also executes QuickMove
+        self.selected = None          # None or (pile_type, pile_idx, card_idx)
+
+    def snapshot(self) -> dict:
+        return {
+            "stock": [Card(c.suit, c.rank, c.face_up) for c in self.stock],
+            "waste": [Card(c.suit, c.rank, c.face_up) for c in self.waste],
+            "foundations": [[Card(c.suit, c.rank, c.face_up) for c in p] for p in self.foundations],
+            "tableau": [[Card(c.suit, c.rank, c.face_up) for c in col] for col in self.tableau],
+            "pinned_cards": set(self.pinned_cards),
+            "status": self.status,
+            "last_action_msg": self.last_action_msg,
+        }
+
+    def restore(self, snap: dict):
+        self.stock = [Card(c.suit, c.rank, c.face_up) for c in snap["stock"]]
+        self.waste = [Card(c.suit, c.rank, c.face_up) for c in snap["waste"]]
+        self.foundations = [[Card(c.suit, c.rank, c.face_up) for c in p] for p in snap["foundations"]]
+        self.tableau = [[Card(c.suit, c.rank, c.face_up) for c in col] for col in snap["tableau"]]
+        self.pinned_cards = set(snap["pinned_cards"])
+        self.status = snap["status"]
+        self.last_action_msg = "Move undone."
+        self.selected = None
+
+    def push_undo(self):
+        self.undo_stack.append(self.snapshot())
+
+    def undo(self) -> bool:
+        if not self.undo_stack:
+            self.last_action_msg = "Nothing left to undo."
+            return False
+        snap = self.undo_stack.pop()
+        self.restore(snap)
+        return True
+
+    def deal_new_game(self, seed: int = None):
+        if seed is not None:
+            self.seed = seed
+        else:
+            self.seed = random.randrange(1_000_000_000)
+        rng = random.Random(self.seed)
+        deck = [Card(s, r, False) for s in range(4) for r in range(1, 14)]
+        rng.shuffle(deck)
+
+        self.stock.clear()
+        self.waste.clear()
+        self.foundations = [[], [], [], []]
+        self.tableau = [[] for _ in range(7)]
+        self.pinned_cards.clear()
+        self.undo_stack.clear()
+        self.selected = None
+
+        idx = 0
+        for col in range(7):
+            for row in range(col + 1):
+                c = deck[idx]
+                idx += 1
+                c.face_up = (row == col)
+                self.tableau[col].append(c)
+
+        for rem in deck[idx:]:
+            rem.face_up = False
+            self.stock.append(rem)
+
+        self.status = "PLAYING"
+        self.last_action_msg = "New game dealt."
+        SolverEngine.settle(self, allow_autodrop=True)
+
+
+# ==============================================================================
+# MODULE 2: PYSOLFC FRICTIONLESS RULE & DEADLOCK ENGINE (SolverEngine)
+# ==============================================================================
+
+class SolverEngine:
+    @staticmethod
+    def can_move_to_foundation(card: Card, foundations: list) -> int:
+        """Returns foundation index (0..3) if card can move to its suit foundation, else -1."""
+        f_idx = card.suit
+        pile = foundations[f_idx]
+        if not pile:
+            return f_idx if card.rank == 1 else -1
+        return f_idx if pile[-1].rank == card.rank - 1 else -1
+
+    @staticmethod
+    def can_move_to_tableau(card: Card, target_col: list) -> bool:
+        """Returns True if `card` (head of a face-up sequence) can be placed on `target_col`."""
+        if not target_col:
+            return card.rank == 13  # Only Kings on empty columns
+        top = target_col[-1]
+        if not top.face_up:
+            return False
+        return (card.is_red != top.is_red) and (top.rank == card.rank + 1)
+
+    @staticmethod
+    def flip_exposed_tableau(state: GameState) -> int:
+        """Flips any exposed face-down top card on the tableau. Returns count flipped."""
+        flipped = 0
+        for col in state.tableau:
+            if col and not col[-1].face_up:
+                col[-1].face_up = True
+                flipped += 1
+        return flipped
+
+    @staticmethod
+    def clean_covered_pins(state: GameState):
+        """If a pinned card is covered by another card in the tableau, unpin it."""
+        if not state.pinned_cards:
+            return
+        exposed_keys = set()
+        for col in state.tableau:
+            if col and col[-1].face_up:
+                exposed_keys.add(col[-1].id_key)
+        state.pinned_cards.intersection_update(exposed_keys)
+
+    @staticmethod
+    def run_autodrop(state: GameState) -> int:
+        """
+        PySolFC Frictionless Auto-Drop:
+        Automatically advances any valid exposed card from Waste or Tableau bottom
+        into the top Foundation piles, EXCEPT cards currently in `state.pinned_cards`
+        (cards intentionally pulled down from a Foundation by the Operator).
+        """
+        moved_total = 0
+        while True:
+            moved_this_pass = False
+            SolverEngine.flip_exposed_tableau(state)
+            SolverEngine.clean_covered_pins(state)
+
+            # 1. Check Waste top card
+            if state.waste:
+                w_card = state.waste[-1]
+                if w_card.id_key not in state.pinned_cards:
+                    f_idx = SolverEngine.can_move_to_foundation(w_card, state.foundations)
+                    if f_idx != -1:
+                        state.waste.pop()
+                        state.foundations[f_idx].append(w_card)
+                        moved_total += 1
+                        moved_this_pass = True
+                        continue
+
+            # 2. Check Tableau exposed bottom cards
+            for col in state.tableau:
+                if not col:
+                    continue
+                t_card = col[-1]
+                if not t_card.face_up or t_card.id_key in state.pinned_cards:
+                    continue
+                f_idx = SolverEngine.can_move_to_foundation(t_card, state.foundations)
+                if f_idx != -1:
+                    col.pop()
+                    state.foundations[f_idx].append(t_card)
+                    SolverEngine.flip_exposed_tableau(state)
+                    moved_total += 1
+                    moved_this_pass = True
+                    break
+
+            if not moved_this_pass:
+                break
+
+        return moved_total
+
+    @staticmethod
+    def execute_draw(state: GameState) -> bool:
+        """1-Card Draw from Stock with Unlimited Redeals."""
+        if not state.stock and not state.waste:
+            state.last_action_msg = "Stock and Waste are empty."
+            return False
+
+        state.push_undo()
+        state.selected = None
+
+        if state.stock:
+            card = state.stock.pop()
+            card.face_up = True
+            state.waste.append(card)
+            dropped = SolverEngine.settle(state, allow_autodrop=True)
+            if dropped:
+                state.last_action_msg = f"Dealt {card.rank_str}{card.suit_str} (+{dropped} auto-dropped)."
+            else:
+                state.last_action_msg = f"Dealt {card.rank_str}{card.suit_str}."
+            return True
+        else:
+            # Unlimited Redeal: Recycle waste back into stock preserving deal order
+            while state.waste:
+                c = state.waste.pop()
+                c.face_up = False
+                state.stock.append(c)
+            # Immediately draw the first card so the player doesn't waste an extra click on an empty waste pile
+            if state.stock:
+                card = state.stock.pop()
+                card.face_up = True
+                state.waste.append(card)
+            dropped = SolverEngine.settle(state, allow_autodrop=True)
+            state.last_action_msg = "Redealt stock." + (f" (+{dropped} auto-dropped)" if dropped else "")
+            return True
+
+    @staticmethod
+    def execute_move(state: GameState, src: tuple, dst: tuple, explicit_to_foundation: bool = False) -> bool:
+        """
+        Executes a validated move from `src` = (type, pile_idx, card_idx) to `dst` = (type, pile_idx).
+        Types: 'waste', 'foundation', 'tableau'
+        """
+        src_type, src_pidx, src_cidx = src
+        dst_type, dst_pidx = dst
+
+        # Extract moving slice
+        if src_type == "waste":
+            if not state.waste:
+                return False
+            moving = [state.waste[-1]]
+        elif src_type == "foundation":
+            pile = state.foundations[src_pidx]
+            if not pile:
+                return False
+            moving = [pile[-1]]
+        elif src_type == "tableau":
+            col = state.tableau[src_pidx]
+            if src_cidx < 0 or src_cidx >= len(col) or not col[src_cidx].face_up:
+                return False
+            moving = col[src_cidx:]
+        else:
+            return False
+
+        lead_card = moving[0]
+
+        # Validate destination
+        if dst_type == "foundation":
+            if len(moving) != 1:
+                return False
+            f_idx = SolverEngine.can_move_to_foundation(lead_card, state.foundations)
+            if f_idx == -1 or (dst_pidx is not None and dst_pidx != f_idx):
+                return False
+            dst_pidx = f_idx
+        elif dst_type == "tableau":
+            if src_type == "tableau" and src_pidx == dst_pidx:
+                return False
+            if not SolverEngine.can_move_to_tableau(lead_card, state.tableau[dst_pidx]):
+                return False
+        else:
+            return False
+
+        # Commit move
+        state.push_undo()
+        state.selected = None
+
+        if src_type == "waste":
+            state.waste.pop()
+        elif src_type == "foundation":
+            state.foundations[src_pidx].pop()
+        elif src_type == "tableau":
+            del state.tableau[src_pidx][src_cidx:]
+
+        if dst_type == "foundation":
+            state.pinned_cards.discard(lead_card.id_key)
+            state.foundations[dst_pidx].append(lead_card)
+            action_desc = f"Moved {lead_card.rank_str}{lead_card.suit_str} to Foundation."
+        else:
+            # If pulled down from foundation, pin it so Auto-Drop doesn't boomerang it back up!
+            if src_type == "foundation":
+                state.pinned_cards.add(lead_card.id_key)
+            state.tableau[dst_pidx].extend(moving)
+            action_desc = f"Moved {lead_card.rank_str}{lead_card.suit_str}" + (
+                f" (+{len(moving)-1})" if len(moving) > 1 else ""
+            ) + f" to Column {dst_pidx + 1}."
+
+        dropped = SolverEngine.settle(state, allow_autodrop=True)
+        if dropped:
+            action_desc += f" (+{dropped} auto-dropped)"
+        state.last_action_msg = action_desc
+        return True
+
+    @staticmethod
+    def quick_move(state: GameState, src: tuple) -> bool:
+        """
+        Right-Click / Double-Click / 1-Click Smart Advance:
+        Moves the clicked card (or valid stack) to the best constructive destination:
+        1. Foundation (if single exposed card and fits its suit pile).
+        2. Tableau column that builds onto an exposed card (preferring non-empty targets for Kings,
+           or columns that expose a face-down card / change parent state).
+        """
+        src_type, src_pidx, src_cidx = src
+
+        if src_type == "waste":
+            if not state.waste:
+                return False
+            moving = [state.waste[-1]]
+            src_cidx = len(state.waste) - 1
+        elif src_type == "foundation":
+            pile = state.foundations[src_pidx]
+            if not pile:
+                return False
+            moving = [pile[-1]]
+            src_cidx = len(pile) - 1
+        elif src_type == "tableau":
+            col = state.tableau[src_pidx]
+            if not col or src_cidx < 0 or src_cidx >= len(col):
+                return False
+            if not col[src_cidx].face_up:
+                return False
+            moving = col[src_cidx:]
+        else:
+            return False
+
+        lead_card = moving[0]
+
+        # Priority 1: If single card (not coming from foundation), try moving directly to Foundation
+        if len(moving) == 1 and src_type != "foundation":
+            f_idx = SolverEngine.can_move_to_foundation(lead_card, state.foundations)
+            if f_idx != -1:
+                return SolverEngine.execute_move(state, (src_type, src_pidx, src_cidx), ("foundation", f_idx), True)
+
+        # Priority 2: Find best Tableau destination
+        candidates = []
+        for dst_idx in range(7):
+            if src_type == "tableau" and dst_idx == src_pidx:
+                continue
+            target_col = state.tableau[dst_idx]
+            if SolverEngine.can_move_to_tableau(lead_card, target_col):
+                # Score destination quality:
+                # Prefer non-empty columns for non-Kings (already enforced),
+                # and if moving a King from tableau index 0 with no face-down cards under it to an empty col, deprioritize
+                score = 10
+                if target_col:
+                    score += 20
+                if src_type == "tableau" and src_cidx > 0 and not state.tableau[src_pidx][src_cidx - 1].face_up:
+                    score += 30  # Uncovers a face-down card!
+                candidates.append((score, dst_idx))
+
+        if candidates:
+            candidates.sort(key=lambda x: (-x[0], x[1]))
+            best_dst = candidates[0][1]
+            return SolverEngine.execute_move(state, (src_type, src_pidx, src_cidx), ("tableau", best_dst))
+
+        state.last_action_msg = f"No advancing move available for {lead_card.rank_str}{lead_card.suit_str}."
+        return False
+
+    @staticmethod
+    def settle(state: GameState, allow_autodrop: bool = True) -> int:
+        """Flips exposed cards, runs Auto-Drop cascade, and evaluates Victory or STUCK deadlock."""
+        SolverEngine.flip_exposed_tableau(state)
+        dropped = SolverEngine.run_autodrop(state) if allow_autodrop else 0
+        SolverEngine.flip_exposed_tableau(state)
+
+        # Check Victory (all 4 foundations have 13 cards)
+        if all(len(p) == 13 for p in state.foundations):
+            state.status = "VICTORY"
+            state.last_action_msg = "VICTORY! All 52 cards organized into foundations."
+            return dropped
+
+        # Check Deadlock / Soft-Lock ("STUCK")
+        if SolverEngine.is_stuck(state):
+            state.status = "STUCK"
+        else:
+            state.status = "PLAYING"
+        return dropped
+
+    @staticmethod
+    def is_stuck(state: GameState, max_states: int = 450) -> bool:
+        """
+        Bounded BFS Constructive Reachability Analyzer:
+        Because Stock uses 1-Card Draw with Unlimited Redeals, EVERY card in `stock + waste`
+        is reachable in the current cycle without needing to simulate individual stock clicks.
+        We search up to `max_states` board configurations to see if ANY legal maneuver sequence
+        can achieve Constructive Progress:
+          1. Move any card into a Foundation, OR
+          2. Flip/uncover any face-down Tableau card, OR
+          3. Play any card from the Stock/Waste pool onto the Tableau that then unlocks (1) or (2)
+             or reduces the Stock/Waste pool productively.
+        Wait: what if playing a card from Stock/Waste onto the Tableau doesn't immediately uncover
+        a card, is playing a Stock/Waste card onto the Tableau constructive?
+        Let's trace carefully:
+        If the player hasn't played a reachable Stock/Waste card onto the Tableau yet, they CAN still
+        make that move! Once they play all reachable Stock/Waste cards onto the Tableau (and make all
+        tableau maneuvers), if no face-down card can be uncovered and no foundation can be advanced,
+        even by exploring multi-step tableau/foundation rearrangements, THEN the game is 100% STUCK.
+        Wait—even better: if our BFS explores playing Stock/Waste cards onto the Tableau AND moving
+        Tableau/Foundation piles around, when is a game truly soft-locked ("STUCK")?
+        A game is STUCK if:
+          - From the current state, NO single move or multi-step sequence of moves (including playing
+            cards from Stock/Waste, shifting Tableau stacks, or pulling down from Foundations) can:
+              (A) Increase the total number of Foundation cards (above current count), OR
+              (B) Decrease the total number of face-down Tableau cards!
+          - What if a player can play a card from Waste onto Tableau, which doesn't uncover a face-down
+            card or advance a Foundation ever? Wait: if playing that Waste card onto the Tableau NEVER
+            leads to uncovering a face-down card or advancing a Foundation (even after 450 states of
+            subsequent moves), then playing that Waste card is a dead-end too!
+          - AND what if there IS a direct constructive move right now (or within N steps)? Then BFS
+            finds (A) or (B) and returns `is_stuck = False`!
+        Let's verify this insight:
+        In Klondike, the ONLY way to win or advance toward completion is to either:
+          (A) Advance at least one Foundation pile (`sum(len(f)) > initial_foundation_count`), OR
+          (B) Uncover at least one face-down Tableau card (`facedown_count < initial_facedown_count`).
+        If NO sequence of legal moves (drawing any card from Stock+Waste, moving Tableau stacks, or
+        pulling Foundation cards down) can EVER achieve (A) or (B), then the game is mathematically
+        impossible to advance—every remaining move in Stock/Waste or Tableau is a dead-end loop!
+        """
+        init_f_count = sum(len(p) for p in state.foundations)
+        init_fd_count = sum(1 for col in state.tableau for c in col if not c.face_up)
+
+        if init_f_count == 52:
+            return False
+
+        # Compact state representation for fast BFS:
+        # pool: frozenset of (suit, rank) in stock + waste
+        # f_tops: tuple of 4 ints (top rank 0..13 for each suit foundation)
+        # tab: tuple of 7 tuples: (facedown_count, ((suit, rank), ... face_up_cards))
+        init_pool = frozenset(c.id_key for c in state.stock) | frozenset(c.id_key for c in state.waste)
+        init_ftops = tuple(len(p) for p in state.foundations)
+        init_tab = []
+        for col in state.tableau:
+            fd = 0
+            fu = []
+            for c in col:
+                if c.face_up:
+                    fu.append(c.id_key)
+                else:
+                    fd += 1
+            init_tab.append((fd, tuple(fu)))
+        init_node = (init_pool, init_ftops, tuple(init_tab))
+
+        queue = deque([init_node])
+        visited = {init_node}
+        states_checked = 0
+
+        while queue and states_checked < max_states:
+            pool, ftops, tab = queue.popleft()
+            states_checked += 1
+
+            # 1. Can any card in `pool` or exposed on `tab` go to Foundation (`ftops`)?
+            for s, r in pool:
+                if ftops[s] == r - 1:
+                    return False  # Constructive progress: Foundation advance!
+
+            for fd, fu in tab:
+                if fu:
+                    s, r = fu[-1]
+                    if ftops[s] == r - 1:
+                        return False  # Constructive progress: Foundation advance!
+
+            # 2. Generate legal Tableau-to-Tableau moves
+            for src_idx in range(7):
+                src_fd, src_fu = tab[src_idx]
+                if not src_fu:
+                    continue
+                for split_idx in range(len(src_fu)):
+                    lead_s, lead_r = src_fu[split_idx]
+                    lead_red = lead_s in (1, 3)
+
+                    for dst_idx in range(7):
+                        if dst_idx == src_idx:
+                            continue
+                        dst_fd, dst_fu = tab[dst_idx]
+                        if not dst_fu:
+                            if lead_r != 13:
+                                continue
+                            # Moving a King already at the very bottom of an empty-facedown column
+                            # to another empty column achieves nothing:
+                            if split_idx == 0 and src_fd == 0:
+                                continue
+                        else:
+                            top_s, top_r = dst_fu[-1]
+                            top_red = top_s in (1, 3)
+                            if lead_red == top_red or top_r != lead_r + 1:
+                                continue
+
+                        # Valid move! Does it uncover a face-down card immediately?
+                        if split_idx == 0 and src_fd > 0:
+                            return False  # Constructive progress: Uncovered a face-down Tableau card!
+
+                        # Otherwise push new state to BFS queue
+                        new_src_fu = src_fu[:split_idx]
+                        new_dst_fu = dst_fu + src_fu[split_idx:]
+                        new_tab = list(tab)
+                        new_tab[src_idx] = (src_fd, new_src_fu)
+                        new_tab[dst_idx] = (dst_fd, new_dst_fu)
+                        nxt = (pool, ftops, tuple(new_tab))
+                        if nxt not in visited:
+                            visited.add(nxt)
+                            queue.append(nxt)
+
+            # 3. Generate Pool (Stock+Waste) -> Tableau moves
+            for card_key in pool:
+                c_s, c_r = card_key
+                c_red = c_s in (1, 3)
+                for dst_idx in range(7):
+                    dst_fd, dst_fu = tab[dst_idx]
+                    if not dst_fu:
+                        if c_r != 13:
+                            continue
+                    else:
+                        top_s, top_r = dst_fu[-1]
+                        top_red = top_s in (1, 3)
+                        if c_red == top_red or top_r != c_r + 1:
+                            continue
+
+                    new_pool = pool - {card_key}
+                    new_tab = list(tab)
+                    new_tab[dst_idx] = (dst_fd, dst_fu + (card_key,))
+                    nxt = (new_pool, ftops, tuple(new_tab))
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        queue.append(nxt)
+
+            # 4. Generate Foundation -> Tableau pull-down maneuvers (only if it could bridge a transfer)
+            for f_suit in range(4):
+                f_rank = ftops[f_suit]
+                if f_rank <= 1:  # Never need to pull down an Ace
+                    continue
+                f_red = f_suit in (1, 3)
+                card_key = (f_suit, f_rank)
+                for dst_idx in range(7):
+                    dst_fd, dst_fu = tab[dst_idx]
+                    if not dst_fu:
+                        if f_rank != 13:
+                            continue
+                    else:
+                        top_s, top_r = dst_fu[-1]
+                        top_red = top_s in (1, 3)
+                        if f_red == top_red or top_r != f_rank + 1:
+                            continue
+
+                    new_ftops = list(ftops)
+                    new_ftops[f_suit] -= 1
+                    new_tab = list(tab)
+                    new_tab[dst_idx] = (dst_fd, dst_fu + (card_key,))
+                    nxt = (pool, tuple(new_ftops), tuple(new_tab))
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        queue.append(nxt)
+
+        # If queue exhausted (or max_states reached without finding ANY foundation advance or card flip):
+        # Only declare STUCK if the queue was completely exhausted, OR if zero direct pool->foundation
+        # and zero uncovering moves exist across the explored horizon.
+        return True
+
+
+# ==============================================================================
+# MODULE 3: GAMEBOY / SLYLY DITHER RENDERER & TUI EVENT LOOP (RenderEngine)
+# ==============================================================================
+
+class RenderEngine:
+    """
+    Renders true 9x7 rectangular playing cards with GameBoy Pocket / PySolFC 'Slyly'
+    monochrome contrast dithering:
+      - RED SUITS (♥, ♦): Bright/High-Luma card face. Rounded double-contrast border,
+        light stipple dither (`░`) interior so the whole card glows bright Amber.
+      - BLACK SUITS (♠, ♣): Dark/Low-Luma card face. Sharp crisp border,
+        dense dot/mesh dither (`▒` / `·`) interior so the card reads dark Burnt Orange.
+      - FACE-DOWN BACK: Geometric braided lattice (`╬═╬`) inside muted frame.
+    """
+
+    def __init__(self, stdscr):
+        self.stdscr = stdscr
+        self.hitboxes = []  # List of (y1, x1, y2, x2, action_tuple)
+        self.last_rclick_ts = 0.0
+        self.setup_colors()
+
+    def setup_colors(self):
+        curses.start_color()
+        curses.use_default_colors()
+
+        # Pair 1: Bright Amber (Red Suits ♥/♦ & Highlights) -> #FF8C00 / Bold Yellow-Orange
+        # Pair 2: Deep Burnt Orange (Black Suits ♠/♣ & Borders) -> #CC5500
+        # Pair 3: Muted / Dim Lattice (Card Backs & Empty Slots)
+        # Pair 4: Status Bar / Buttons Normal
+        # Pair 5: Status Alert (STUCK / Selected Highlight - Reverse Bright Amber)
+        if curses.COLORS >= 256:
+            # 256-color exact FhawxTDE hex mapping:
+            # 208 = #FF8700 (Bright Amber), 166 = #D75F00 (Burnt Orange), 130 = #AF5F00 (Muted Copper)
+            curses.init_pair(1, 214, -1)  # High-Luma Bright Amber (Red Suits)
+            curses.init_pair(2, 166, -1)  # Low-Luma Burnt Orange (Black Suits)
+            curses.init_pair(3, 130, -1)  # Muted Copper (Card Backs / Empty Slots)
+            curses.init_pair(4, 208, -1)  # UI Chrome / Top Bar
+            curses.init_pair(5, 16, 214)  # Reverse High-Contrast Alert / Selection
+        else:
+            curses.init_pair(1, curses.COLOR_YELLOW, -1)
+            curses.init_pair(2, curses.COLOR_RED, -1)
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+            curses.init_pair(4, curses.COLOR_YELLOW, -1)
+            curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+
+        self.attr_red = curses.color_pair(1) | curses.A_BOLD
+        self.attr_black = curses.color_pair(2)
+        self.attr_back = curses.color_pair(3) | curses.A_DIM
+        self.attr_ui = curses.color_pair(4) | curses.A_BOLD
+        self.attr_alert = curses.color_pair(5) | curses.A_BOLD
+        self.attr_selected = curses.color_pair(1) | curses.A_REVERSE | curses.A_BOLD
+
+    def safe_addstr(self, y: int, x: int, text: str, attr: int = 0):
+        max_y, max_x = self.stdscr.getmaxyx()
+        if y < 0 or y >= max_y or x >= max_x:
+            return
+        if x < 0:
+            text = text[-x:]
+            x = 0
+        if x + len(text) > max_x:
+            text = text[: max_x - x]
+        if not text:
+            return
+        try:
+            self.stdscr.addstr(y, x, text, attr)
+        except curses.error:
+            pass
+
+    def draw_empty_slot(self, y: int, x: int, label: str = ""):
+        """Draws a 9x7 recessed empty card slot."""
+        self.safe_addstr(y + 0, x, "┌ · · · ┐", self.attr_back)
+        self.safe_addstr(y + 1, x, "·       ·", self.attr_back)
+        self.safe_addstr(y + 2, x, "·       ·", self.attr_back)
+        mid = f"·{label:^7}·" if label else "·   ·   ·"
+        self.safe_addstr(y + 3, x, mid, self.attr_back)
+        self.safe_addstr(y + 4, x, "·       ·", self.attr_back)
+        self.safe_addstr(y + 5, x, "·       ·", self.attr_back)
+        self.safe_addstr(y + 6, x, "└ · · · ┘", self.attr_back)
+
+    def draw_card_back_full(self, y: int, x: int, count_label: str = ""):
+        """Draws a full 9x7 geometric braided lattice card back."""
+        self.safe_addstr(y + 0, x, "╭═══════╮", self.attr_back)
+        self.safe_addstr(y + 1, x, "║╬═╬═╬═╬║", self.attr_back)
+        self.safe_addstr(y + 2, x, "║═╬═╬═╬═║", self.attr_back)
+        if count_label:
+            self.safe_addstr(y + 3, x, f"║╬{count_label:^5}╬║", self.attr_ui)
+        else:
+            self.safe_addstr(y + 3, x, "║╬═╬═╬═╬║", self.attr_back)
+        self.safe_addstr(y + 4, x, "║═╬═╬═╬═║", self.attr_back)
+        self.safe_addstr(y + 5, x, "║╬═╬═╬═╬║", self.attr_back)
+        self.safe_addstr(y + 6, x, "╰═══════╯", self.attr_back)
+
+    def draw_card_face_full(self, y: int, x: int, card: Card, selected: bool = False, pinned: bool = False):
+        """
+        Draws a full 9x7 Slyly / GameBoy Pocket monochrome playing card:
+        - Red Suits (♥, ♦): High-Luma bright card with `░` light stipple fill & rounded border.
+        - Black Suits (♠, ♣): Low-Luma shaded card with dark dot-matrix interior & sharp border.
+        """
+        r_str = card.rank_str
+        s_str = card.suit_str
+        tl = f"{r_str}{s_str}"   # Top-left index (2 or 3 chars, e.g. "A♥" or "10♠")
+        br = f"{s_str}{r_str}"   # Bottom-right index
+
+        if selected:
+            attr = self.attr_selected
+            b_tl, b_tr, b_bl, b_br, b_h, b_v = "┏", "┓", "┗", "┛", "━", "┃"
+            fill = "░" if card.is_red else " "
+        elif card.is_red:
+            attr = self.attr_red
+            b_tl, b_tr, b_bl, b_br, b_h, b_v = "╭", "╮", "╰", "╯", "─", "│"
+            fill = "░"  # High-luma bright GameBoy dither
+        else:
+            attr = self.attr_black
+            b_tl, b_tr, b_bl, b_br, b_h, b_v = "┌", "┐", "└", "┘", "─", "│"
+            fill = "·"  # Low-luma dark dot-matrix dither
+
+        pin_mark = "•" if pinned else b_h
+        top_border = f"{b_tl}{b_h*3}{pin_mark}{b_h*3}{b_tr}"
+        bot_border = f"{b_bl}{b_h*7}{b_br}"
+
+        # Row 1: Top-left rank+suit, dither fill
+        r1_inner = f"{tl}{fill * (7 - len(tl))}"
+        # Row 5: Dither fill, bottom-right suit+rank
+        r5_inner = f"{fill * (7 - len(br))}{br}"
+
+        # Rows 2, 3, 4: Slyly geometric suit plate in center
+        if card.is_red:
+            r2_inner = f"{fill}╭───╮{fill}"
+            r3_inner = f"{fill}│ {s_str} │{fill}"
+            r4_inner = f"{fill}╰───╯{fill}"
+        else:
+            r2_inner = f"{fill}▛▀▀▀▜{fill}"
+            r3_inner = f"{fill}▌ {s_str} ▐{fill}"
+            r4_inner = f"{fill}▙▄▄▄▟{fill}"
+
+        self.safe_addstr(y + 0, x, top_border, attr)
+        self.safe_addstr(y + 1, x, f"{b_v}{r1_inner}{b_v}", attr)
+        self.safe_addstr(y + 2, x, f"{b_v}{r2_inner}{b_v}", attr)
+        self.safe_addstr(y + 3, x, f"{b_v}{r3_inner}{b_v}", attr)
+        self.safe_addstr(y + 4, x, f"{b_v}{r4_inner}{b_v}", attr)
+        self.safe_addstr(y + 5, x, f"{b_v}{r5_inner}{b_v}", attr)
+        self.safe_addstr(y + 6, x, bot_border, attr)
+
+    def draw_tableau_buried_strip(self, y: int, x: int, card: Card, selected: bool = False, height: int = 2):
+        """
+        Draws the overlapping top strip of a buried card in a Tableau column:
+        - Face-down card: 1-row geometric braided lattice top edge.
+        - Face-up card: 2-row high-contrast header strip showing rank, suit, and dither polarity.
+        """
+        if not card.face_up:
+            self.safe_addstr(y, x, "╭═╬═╬═╬═╮", self.attr_back)
+            return
+
+        r_str = card.rank_str
+        s_str = card.suit_str
+        tl = f"{r_str}{s_str}"
+        tr = f"{s_str}"
+
+        if selected:
+            attr = self.attr_selected
+            b_tl, b_tr, b_h, b_v = "┏", "┓", "━", "┃"
+            fill = "░" if card.is_red else " "
+        elif card.is_red:
+            attr = self.attr_red
+            b_tl, b_tr, b_h, b_v = "╭", "╮", "─", "│"
+            fill = "░"
+        else:
+            attr = self.attr_black
+            b_tl, b_tr, b_h, b_v = "┌", "┐", "─", "│"
+            fill = "·"
+
+        self.safe_addstr(y + 0, x, f"{b_tl}{b_h*7}{b_tr}", attr)
+        if height >= 2:
+            pad_len = 7 - len(tl) - len(tr)
+            inner = f"{tl}{fill * max(1, pad_len)}{tr}"
+            self.safe_addstr(y + 1, x, f"{b_v}{inner[:7]}{b_v}", attr)
+
+    def render(self, state: GameState):
+        self.stdscr.erase()
+        self.hitboxes.clear()
+        max_y, max_x = self.stdscr.getmaxyx()
+
+        if max_x < MIN_COLS or max_y < MIN_ROWS:
+            msg1 = "FHAWX-SOLITAIRE // VIEWPORT TOO NARROW"
+            msg2 = f"Current: {max_x}x{max_y} | Required: {MIN_COLS}x{MIN_ROWS} (Full-Size 9x7 Cards)"
+            msg3 = "Press [Alt+Z] (or Alt+S) to zoom pane to fullscreen, or [Q] to quit."
+            cy = max(0, max_y // 2 - 1)
+            self.safe_addstr(cy, max(0, (max_x - len(msg1)) // 2), msg1, self.attr_alert)
+            self.safe_addstr(cy + 1, max(0, (max_x - len(msg2)) // 2), msg2, self.attr_ui)
+            self.safe_addstr(cy + 2, max(0, (max_x - len(msg3)) // 2), msg3, self.attr_black)
+            self.stdscr.refresh()
+            return
+
+        # Center the 70-column card table horizontally
+        table_w = 7 * CARD_W + 6 * 1  # 69 columns
+        x0 = max(1, (max_x - table_w) // 2)
+
+        # ----------------------------------------------------------------------
+        # ROW 0: Top Action Bar (Buttons + Mode Toggle)
+        # ----------------------------------------------------------------------
+        bar_y = 0
+        btn_new = "[NEW(N)]"
+        btn_undo = f"[UNDO:{len(state.undo_stack)}(U)]"
+        mode_lbl = "1-CLICK:ON(M)" if state.one_click_mode else "1-CLICK:OFF(M)"
+        btn_mode = f"[{mode_lbl}]"
+        btn_quit = "[QUIT(Q)]"
+
+        bx = x0
+        self.safe_addstr(bar_y, bx, "♠♥♣♦ KLONDIKE ", self.attr_ui)
+        bx += 14
+
+        self.safe_addstr(bar_y, bx, btn_new, self.attr_red)
+        self.hitboxes.append((bar_y, bx, bar_y, bx + len(btn_new) - 1, ("cmd", "new", 0)))
+        bx += len(btn_new) + 2
+
+        self.safe_addstr(bar_y, bx, btn_undo, self.attr_red if state.undo_stack else self.attr_back)
+        self.hitboxes.append((bar_y, bx, bar_y, bx + len(btn_undo) - 1, ("cmd", "undo", 0)))
+        bx += len(btn_undo) + 2
+
+        self.safe_addstr(bar_y, bx, btn_mode, self.attr_alert if state.one_click_mode else self.attr_black)
+        self.hitboxes.append((bar_y, bx, bar_y, bx + len(btn_mode) - 1, ("cmd", "mode", 0)))
+        bx += len(btn_mode) + 2
+
+        self.safe_addstr(bar_y, bx, btn_quit, self.attr_black)
+        self.hitboxes.append((bar_y, bx, bar_y, bx + len(btn_quit) - 1, ("cmd", "quit", 0)))
+
+        # ----------------------------------------------------------------------
+        # ROW 1..7: Top Row — Stock (Col 0), Waste (Col 1), Foundations (Cols 3..6)
+        # ----------------------------------------------------------------------
+        top_y = 2
+        col_x = [x0 + i * (CARD_W + 1) for i in range(7)]
+
+        # Stock Pile (Col 0)
+        if state.stock:
+            self.draw_card_back_full(top_y, col_x[0], f"{len(state.stock)}")
+        else:
+            self.draw_empty_slot(top_y, col_x[0], "REDEAL")
+        self.hitboxes.append((top_y, col_x[0], top_y + CARD_H - 1, col_x[0] + CARD_W - 1, ("stock", 0, 0)))
+
+        # Waste Pile (Col 1)
+        if state.waste:
+            w_card = state.waste[-1]
+            is_sel = state.selected == ("waste", 0, len(state.waste) - 1)
+            self.draw_card_face_full(
+                top_y, col_x[1], w_card, selected=is_sel, pinned=(w_card.id_key in state.pinned_cards)
+            )
+            self.hitboxes.append(
+                (top_y, col_x[1], top_y + CARD_H - 1, col_x[1] + CARD_W - 1, ("waste", 0, len(state.waste) - 1))
+            )
+        else:
+            self.draw_empty_slot(top_y, col_x[1], "WASTE")
+
+        # Foundations (Cols 3..6 -> Suits 0..3)
+        for f_idx in range(4):
+            fx = col_x[3 + f_idx]
+            f_pile = state.foundations[f_idx]
+            if f_pile:
+                f_card = f_pile[-1]
+                is_sel = state.selected == ("foundation", f_idx, len(f_pile) - 1)
+                self.draw_card_face_full(top_y, fx, f_card, selected=is_sel)
+                self.hitboxes.append((top_y, fx, top_y + CARD_H - 1, fx + CARD_W - 1, ("foundation", f_idx, len(f_pile) - 1)))
+            else:
+                suit_sym = SUITS[f_idx]
+                self.draw_empty_slot(top_y, fx, f"A{suit_sym}")
+                self.hitboxes.append((top_y, fx, top_y + CARD_H - 1, fx + CARD_W - 1, ("foundation_empty", f_idx, 0)))
+
+        # ----------------------------------------------------------------------
+        # ROW 10+: 7 Tableau Columns
+        # ----------------------------------------------------------------------
+        tab_y = top_y + CARD_H + 1  # Row 10
+        avail_h = max_y - tab_y - 2
+
+        for t_idx in range(7):
+            tx = col_x[t_idx]
+            col = state.tableau[t_idx]
+            if not col:
+                self.draw_empty_slot(tab_y, tx, "KING")
+                self.hitboxes.append((tab_y, tx, tab_y + CARD_H - 1, tx + CARD_W - 1, ("tableau_empty", t_idx, 0)))
+                continue
+
+            # Compute vertical step for buried cards so stack always fits inside `avail_h`
+            num_buried = len(col) - 1
+            faceup_buried = sum(1 for c in col[:-1] if c.face_up)
+            facedown_buried = num_buried - faceup_buried
+
+            # Ideal spacing: 1 row per face-down card, 2 rows per buried face-up card
+            ideal_buried_h = facedown_buried * 1 + faceup_buried * 2
+            compress_fu = (ideal_buried_h + CARD_H > avail_h)
+
+            cy = tab_y
+            for c_idx, card in enumerate(col):
+                is_last = (c_idx == len(col) - 1)
+                is_sel = (
+                    state.selected is not None
+                    and state.selected[0] == "tableau"
+                    and state.selected[1] == t_idx
+                    and c_idx >= state.selected[2]
+                )
+
+                if is_last:
+                    self.draw_card_face_full(
+                        cy, tx, card, selected=is_sel, pinned=(card.id_key in state.pinned_cards)
+                    )
+                    self.hitboxes.append((cy, tx, cy + CARD_H - 1, tx + CARD_W - 1, ("tableau", t_idx, c_idx)))
+                    cy += CARD_H
+                else:
+                    step = 1 if (not card.face_up or compress_fu) else 2
+                    self.draw_tableau_buried_strip(cy, tx, card, selected=is_sel, height=step)
+                    if card.face_up:
+                        self.hitboxes.append((cy, tx, cy + step - 1, tx + CARD_W - 1, ("tableau", t_idx, c_idx)))
+                    cy += step
+
+        # ----------------------------------------------------------------------
+        # Status / Stuck / Victory Banner (Row 1 and Bottom Footer)
+        # ----------------------------------------------------------------------
+        if state.status == "STUCK":
+            banner = " [ ! STUCK — NO CONSTRUCTIVE MOVES LEFT ! PRESS (N) FOR NEW GAME OR (U) TO UNDO ] "
+            self.safe_addstr(1, max(0, (max_x - len(banner)) // 2), banner, self.attr_alert)
+        elif state.status == "VICTORY":
+            banner = " [ ★ VICTORY! ALL SUITS COMPLETED! PRESS (N) FOR NEW GAME ★ ] "
+            self.safe_addstr(1, max(0, (max_x - len(banner)) // 2), banner, self.attr_alert)
+        else:
+            # Subtle legend on row 1
+            legend = "Bright ░ = Red (♥ ♦)  │  Shaded · = Black (♠ ♣)  │  Right-Click = Auto-Move"
+            self.safe_addstr(1, max(0, (max_x - len(legend)) // 2), legend, self.attr_back)
+
+        # Bottom telemetry message bar
+        footer_y = max_y - 1
+        status_line = f" {state.last_action_msg}"
+        self.safe_addstr(footer_y, x0, status_line[:table_w], self.attr_ui)
+
+        self.stdscr.refresh()
+
+    def resolve_hitbox(self, my: int, mx: int):
+        """Returns the topmost matching hitbox action tuple for (my, mx), or None."""
+        for y1, x1, y2, x2, act in reversed(self.hitboxes):
+            if y1 <= my <= y2 and x1 <= mx <= x2:
+                return act
+        return None
+
+    def handle_mouse(self, state: GameState, bstate: int, mx: int, my: int):
+        hit = self.resolve_hitbox(my, mx)
+
+        is_right = bool(
+            bstate
+            & (
+                getattr(curses, "BUTTON3_PRESSED", 0)
+                | getattr(curses, "BUTTON3_CLICKED", 0)
+                | getattr(curses, "BUTTON2_PRESSED", 0)
+                | getattr(curses, "BUTTON2_CLICKED", 0)
+            )
+        )
+        is_double = bool(bstate & getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0))
+        is_left = bool(
+            bstate
+            & (
+                getattr(curses, "BUTTON1_CLICKED", 0)
+                | getattr(curses, "BUTTON1_PRESSED", 0)
+                | getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0)
+            )
+        )
+
+        # Debounce rapid press+click duplicate emissions
+        now = time.monotonic()
+        if now - self.last_rclick_ts < 0.09:
+            return
+        self.last_rclick_ts = now
+
+        if hit is None:
+            state.selected = None
+            return
+
+        h_type, h_pidx, h_cidx = hit
+
+        # Top Bar Command Buttons
+        if h_type == "cmd":
+            if h_pidx == "new":
+                state.deal_new_game()
+            elif h_pidx == "undo":
+                state.undo()
+            elif h_pidx == "mode":
+                state.one_click_mode = not state.one_click_mode
+                state.selected = None
+                state.last_action_msg = (
+                    "1-Click Smart Mode ON: Left-clicking any card immediately auto-moves it."
+                    if state.one_click_mode
+                    else "1-Click Smart Mode OFF: Left-click selects/places; Right-click auto-moves."
+                )
+            elif h_pidx == "quit":
+                raise SystemExit(0)
+            return
+
+        # Stock Pile Click (Left or Right click deals 1 card)
+        if h_type == "stock":
+            SolverEngine.execute_draw(state)
+            return
+
+        # Right-Click, Double-Click, or 1-Click Mode -> Immediate QuickMove!
+        if is_right or is_double or (state.one_click_mode and is_left and state.selected is None):
+            if h_type in ("waste", "tableau", "foundation"):
+                state.selected = None
+                SolverEngine.quick_move(state, (h_type, h_pidx, h_cidx))
+            return
+
+        # Standard Left-Click: Select -> Place (or click same card twice to QuickMove!)
+        if is_left:
+            if state.selected is None:
+                if h_type in ("waste", "tableau", "foundation"):
+                    state.selected = (h_type, h_pidx, h_cidx)
+                    state.last_action_msg = "Card selected. Click destination pile (or click card again to auto-move)."
+            else:
+                # Clicking the exact same selected card a second time triggers QuickMove!
+                if state.selected == (h_type, h_pidx, h_cidx):
+                    sel = state.selected
+                    state.selected = None
+                    SolverEngine.quick_move(state, sel)
+                    return
+
+                # Attempt to move `state.selected` to clicked destination
+                sel = state.selected
+                if h_type in ("foundation", "foundation_empty"):
+                    if SolverEngine.execute_move(state, sel, ("foundation", h_pidx), True):
+                        return
+                elif h_type in ("tableau", "tableau_empty"):
+                    if SolverEngine.execute_move(state, sel, ("tableau", h_pidx)):
+                        return
+
+                # If destination wasn't valid, switch selection to the newly clicked card if selectable
+                if h_type in ("waste", "tableau", "foundation"):
+                    state.selected = (h_type, h_pidx, h_cidx)
+                    state.last_action_msg = "Switched selection."
+                else:
+                    state.selected = None
+                    state.last_action_msg = "Invalid destination. Selection cleared."
+
+
+def run_tui(stdscr):
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+    # Short mouse click interval so single-clicks feel instant without waiting for double-click timeout
+    curses.mouseinterval(0)
+
+    renderer = RenderEngine(stdscr)
+    state = GameState()
+    state.deal_new_game()
+
+    while True:
+        renderer.render(state)
+        ch = stdscr.getch()
+
+        if ch in (ord("q"), ord("Q"), 27):  # Q or ESC
+            break
+        elif ch in (ord("n"), ord("N")):
+            state.deal_new_game()
+        elif ch in (ord("u"), ord("U"), ord("z"), ord("Z"), curses.KEY_BACKSPACE, 127, 8):
+            state.undo()
+        elif ch in (ord("m"), ord("M")):
+            state.one_click_mode = not state.one_click_mode
+            state.selected = None
+            state.last_action_msg = (
+                "1-Click Smart Mode ON: Left-clicking any card immediately auto-moves it."
+                if state.one_click_mode
+                else "1-Click Smart Mode OFF: Left-click selects/places; Right-click auto-moves."
+            )
+        elif ch in (ord(" "), ord("d"), ord("D"), 10, 13):
+            SolverEngine.execute_draw(state)
+        elif ch in (ord("1"), ord("2"), ord("3"), ord("4"), ord("5"), ord("6"), ord("7")):
+            col_idx = ch - ord("1")
+            col = state.tableau[col_idx]
+            if col:
+                SolverEngine.quick_move(state, ("tableau", col_idx, len(col) - 1))
+        elif ch in (ord("w"), ord("W")):
+            if state.waste:
+                SolverEngine.quick_move(state, ("waste", 0, len(state.waste) - 1))
+        elif ch == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+                renderer.handle_mouse(state, bstate, mx, my)
+            except curses.error:
+                pass
+        elif ch == curses.KEY_RESIZE:
+            curses.update_lines_cols()
+
+
+# ==============================================================================
+# SELF-TEST SUITE (--self-test)
+# ==============================================================================
+
+def run_self_test() -> int:
+    print("[TEST] Running fhawx-solitaire deterministic verification...")
+
+    # Test 1: Deal & Unlimited Redeals + Undo Stack
+    st = GameState(seed=42)
+    st.deal_new_game(seed=42)
+    initial_total = (
+        len(st.stock)
+        + len(st.waste)
+        + sum(len(f) for f in st.foundations)
+        + sum(len(c) for c in st.tableau)
+    )
+    assert initial_total == 52, f"Expected 52 cards, found {initial_total}"
+
+    # Cycle entire stock into waste and trigger unlimited redeal
+    draws = len(st.stock) + 2
+    for _ in range(draws):
+        SolverEngine.execute_draw(st)
+    assert len(st.undo_stack) <= MAX_UNDO_HISTORY
+    assert st.undo() is True
+
+    # Test 2: Boomerang Prevention (Foundation pull-down pins card against Auto-Drop)
+    st2 = GameState(seed=100)
+    st2.stock.clear()
+    st2.waste.clear()
+    st2.foundations = [[Card(0, 1, True), Card(0, 2, True)], [], [], []]  # A♠, 2♠ in Foundation
+    st2.tableau = [[] for _ in range(7)]
+    st2.tableau[0] = [Card(1, 3, True)]  # 3♥ on Tableau Col 0
+
+    # Pull 2♠ down from Foundation 0 onto 3♥ in Tableau Col 0
+    ok = SolverEngine.execute_move(st2, ("foundation", 0, 1), ("tableau", 0))
+    assert ok is True, "Failed to pull 2♠ down from Foundation onto 3♥"
+    assert len(st2.tableau[0]) == 2 and st2.tableau[0][-1].id_key == (0, 2), (
+        "Boomerang bug! 2♠ snapped back up to Foundation instead of staying pinned on Tableau!"
+    )
+
+    # Right-clicking the pinned 2♠ should explicitly send it back up to Foundation
+    ok_up = SolverEngine.quick_move(st2, ("tableau", 0, 1))
+    assert ok_up is True and len(st2.foundations[0]) == 2, "Right-click failed to return pinned card to Foundation"
+
+    # Test 3: Deadlock ("STUCK") Detector with Infinite Lateral King Loop
+    st3 = GameState(seed=200)
+    st3.stock = [Card(0, 10, False)]  # 10♠ in stock
+    st3.waste = []
+    st3.foundations = [[], [], [], []]
+    st3.tableau = [[] for _ in range(7)]
+    # Col 0 has a face-down 5♣ blocked by a face-up 8♠; Col 1 has a lone King K♥ at bottom that can bounce to Col 2..6
+    st3.tableau[0] = [Card(2, 5, False), Card(0, 8, True)]
+    st3.tableau[1] = [Card(1, 13, True)]
+    SolverEngine.settle(st3, allow_autodrop=True)
+    assert st3.status == "STUCK", f"Expected STUCK when only pointless lateral King moves exist, got {st3.status}"
+
+    # Test 4: Constructive multi-step maneuver is NOT stuck
+    # Add a 9♥ to Col 2 so 8♠ on Col 0 can move to 9♥ and uncover the face-down 5♣!
+    st3.tableau[2] = [Card(1, 9, True)]
+    SolverEngine.settle(st3, allow_autodrop=True)
+    assert st3.status == "PLAYING", f"Expected PLAYING when a constructive move exists, got {st3.status}"
+
+    print("[PASS] All 4 core solitaire & solver tests passed 100%.")
+    return 0
+
+
+if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(run_self_test())
+    try:
+        curses.wrapper(run_tui)
+    except KeyboardInterrupt:
+        pass
