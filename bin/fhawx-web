@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# FHAWX-WEB // FULL CHROMIUM WEB BROWSER LAUNCHER FOR FHAWXTDE
+# Target: FhawxTDE (Kiosk & Desktop X11 Sessions)
+# Aesthetic: Monochromatic Burnt Orange (#CC5500 / #FF8C00)
+# Notes:
+#   - Uses a dedicated persistent browser profile (~/.config/fhawx/browser_profile)
+#     with full address bar, tabs, and clipboard support so sign-in state persists
+#     and never collides with single-window appliance profiles.
+#   - Uses `setsid -f` + `tmux run-shell -b` so `tmux display-popup -E` teardown
+#     never kills the Chromium process group when the launcher popup closes.
+#   - Includes an automatic X11 Clipboard Keeper (xclip) so copying text/API keys
+#     in Chromium and closing the browser window never wipes the X11 clipboard.
+# ==============================================================================
+
+set -euo pipefail
+
+THEME_ORANGE="#CC5500"
+THEME_AMBER="#FF8C00"
+ORANGE="\033[38;2;204;85;0m"
+AMBER="\033[38;2;255;140;0m"
+GREEN="\033[38;2;80;220;100m"
+RESET="\033[0m"
+
+PROFILE_DIR="$HOME/.config/fhawx/browser_profile"
+CLIP_CACHE="$HOME/.config/fhawx/last_clipboard.txt"
+RUNNER_SCRIPT="$HOME/.config/fhawx/run_browser_detached.sh"
+mkdir -p "$PROFILE_DIR"
+chmod 700 "$PROFILE_DIR" 2>/dev/null || true
+
+export DISPLAY="${DISPLAY:-:0}"
+if [ -z "${XAUTHORITY:-}" ] || [ ! -f "${XAUTHORITY:-}" ]; then
+    XAUTH_CANDIDATE=$(ls -1t /tmp/serverauth.* "$HOME/.Xauthority" 2>/dev/null | head -n 1 || true)
+    [ -n "$XAUTH_CANDIDATE" ] && export XAUTHORITY="$XAUTH_CANDIDATE"
+fi
+
+choose_item() {
+    local header="$1"
+    shift
+    if command -v gum >/dev/null 2>&1; then
+        gum choose \
+            --header.foreground "$THEME_AMBER" \
+            --header "$header" \
+            --cursor.foreground "$THEME_AMBER" \
+            --item.foreground "$THEME_ORANGE" \
+            -- "$@"
+    elif command -v fzf >/dev/null 2>&1; then
+        printf "%s\n" "$@" | fzf --prompt="$header > " --color="fg:#CC5500,hl:#FF8C00,pointer:#FF8C00"
+    else
+        select opt in "$@"; do
+            echo "$opt"
+            break
+        done
+    fi
+}
+
+clean_stale_locks() {
+    local lock_file="$PROFILE_DIR/SingletonLock"
+    if [ -L "$lock_file" ]; then
+        local target pid
+        target=$(readlink "$lock_file" 2>/dev/null || true)
+        pid="${target##*-}"
+        if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie"
+        fi
+    fi
+}
+
+launch_url() {
+    local url="$1"
+    if [[ ! "$url" =~ ^https?:// ]] && [[ ! "$url" =~ ^file:// ]]; then
+        url="https://$url"
+    fi
+
+    clean_stale_locks
+
+    local browser_bin=""
+    for b in chromium chromium-browser google-chrome firefox-esr firefox; do
+        if command -v "$b" >/dev/null 2>&1; then
+            browser_bin="$(command -v "$b")"
+            break
+        fi
+    done
+
+    if [ -z "$browser_bin" ]; then
+        echo -e "${ORANGE}[!] No graphical browser found on this node.${RESET}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}[⚡ Fhawx-Web] Opening ${url} on DISPLAY=${DISPLAY}...${RESET}"
+    echo -e "${AMBER}Tip: Close Chromium ([X] or Ctrl+W) when done to drop right back to FhawxTDE.${RESET}"
+    echo -e "${AMBER}     Copied text stays in clipboard (Ctrl+Shift+V to paste in terminal).${RESET}"
+
+    cat << EOF > "$RUNNER_SCRIPT"
+#!/usr/bin/env bash
+export DISPLAY="${DISPLAY}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+if [[ "$browser_bin" == *"chromium"* ]] || [[ "$browser_bin" == *"chrome"* ]]; then
+    "$browser_bin" \\
+        --user-data-dir="$PROFILE_DIR" \\
+        --window-size=1920,1080 \\
+        --start-maximized \\
+        --no-first-run \\
+        --no-default-browser-check \\
+        --password-store=basic \\
+        "$url" </dev/null >/dev/null 2>&1 &
+else
+    "$browser_bin" "$url" </dev/null >/dev/null 2>&1 &
+fi
+BROWSER_PID=\$!
+
+if command -v xclip >/dev/null 2>&1; then
+    LAST_VAL=""
+    while kill -0 "\$BROWSER_PID" 2>/dev/null; do
+        CUR=\$(xclip -o -selection clipboard 2>/dev/null || true)
+        if [ -n "\$CUR" ] && [ "\$CUR" != "\$LAST_VAL" ]; then
+            LAST_VAL="\$CUR"
+            umask 077
+            printf "%s" "\$LAST_VAL" > "$CLIP_CACHE"
+        fi
+        sleep 1
+    done
+    if [ -n "\$LAST_VAL" ]; then
+        printf "%s" "\$LAST_VAL" | xclip -i -selection clipboard 2>/dev/null || true
+        printf "%s" "\$LAST_VAL" | xclip -i -selection primary 2>/dev/null || true
+    fi
+fi
+EOF
+    chmod +x "$RUNNER_SCRIPT"
+
+    # Spawn in a fresh kernel session ID (setsid -f) AND outside display-popup's cgroup/process-group
+    if tmux -L fhawx has-session 2>/dev/null; then
+        tmux -L fhawx run-shell -b "setsid -f '$RUNNER_SCRIPT' </dev/null >/dev/null 2>&1"
+    else
+        setsid -f "$RUNNER_SCRIPT" </dev/null >/dev/null 2>&1
+    fi
+    sleep 0.3
+}
+
+if [ $# -gt 0 ]; then
+    case "$1" in
+        --kill|kill|close)
+            pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+            echo -e "${GREEN}[✓] Closed Fhawx-Web browser session.${RESET}"
+            exit 0
+            ;;
+        --clip|clip|paste)
+            if command -v xclip >/dev/null 2>&1 && xclip -o -selection clipboard 2>/dev/null; then
+                exit 0
+            elif [ -f "$CLIP_CACHE" ]; then
+                cat "$CLIP_CACHE"
+                exit 0
+            fi
+            exit 1
+            ;;
+        *)
+            launch_url "$1"
+            exit 0
+            ;;
+    esac
+fi
+
+MENU_OPTIONS=(
+    "1. [Google AI Studio] Get / Manage Gemini API Key (aistudio.google.com/app/apikey)"
+    "2. [Google]           Google Search & Account Sign-In (google.com)"
+    "3. [GitHub]           GitHub Repositories (github.com/Tethtibis)"
+    "4. [Custom URL]       Type Any Website Address..."
+    "5. [Save Gemini Key]  Auto-Import Copied Gemini Key from Clipboard into Encrypted Vault"
+    "6. [Close Browser]    Close Running Fhawx-Web Browser Window"
+    "0. [Cancel]           Return to FhawxTDE"
+)
+
+CHOICE=$(choose_item "🌐 FHAWX-WEB // CHROMIUM BROWSER LAUNCHER (Alt+B)" "${MENU_OPTIONS[@]}" || true)
+
+case "${CHOICE:-}" in
+    *"Google AI Studio"*)
+        launch_url "https://aistudio.google.com/app/apikey"
+        ;;
+    *"Google Search"*)
+        launch_url "https://www.google.com"
+        ;;
+    *"GitHub"*)
+        launch_url "https://github.com/Tethtibis"
+        ;;
+    *"Custom URL"*)
+        if command -v gum >/dev/null 2>&1; then
+            CUSTOM_URL=$(gum input --placeholder "https://example.com" --prompt "URL > " --prompt.foreground "$THEME_AMBER" || true)
+        else
+            read -r -p "Enter URL: " CUSTOM_URL
+        fi
+        if [ -n "${CUSTOM_URL:-}" ]; then
+            launch_url "$CUSTOM_URL"
+        fi
+        ;;
+    *"Save Gemini Key"*)
+        CLIP_VAL=""
+        if command -v xclip >/dev/null 2>&1; then
+            CLIP_VAL=$(xclip -o -selection clipboard 2>/dev/null || true)
+        fi
+        if [ -z "$CLIP_VAL" ] && [ -f "$CLIP_CACHE" ]; then
+            CLIP_VAL=$(cat "$CLIP_CACHE" 2>/dev/null || true)
+        fi
+        CLIP_VAL=$(echo -n "$CLIP_VAL" | tr -d '[:space:]')
+        if [[ "$CLIP_VAL" =~ ^AIza[0-9A-Za-z_-]{30,}$ ]]; then
+            ENGINE_SCRIPT=$(find / -maxdepth 3 -name "*_engine.py" 2>/dev/null | head -n 1 || true)
+            if [ -n "$ENGINE_SCRIPT" ]; then
+                python3 "$ENGINE_SCRIPT" set-key --provider gemini --key "$CLIP_VAL"
+                echo -e "${GREEN}[✓] Gemini API Key encrypted & stored in Local Vault!${RESET}"
+            else
+                echo -e "${ORANGE}[!] Local engine vault utility not found on this host.${RESET}"
+            fi
+        else
+            echo -e "${ORANGE}[!] Clipboard does not contain a valid 'AIza...' Gemini API key.${RESET}"
+        fi
+        read -r -p "Press Enter to return..."
+        ;;
+    *"Close Browser"*)
+        pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+        echo -e "${GREEN}[✓] Closed Fhawx-Web browser window.${RESET}"
+        sleep 1
+        ;;
+    *)
+        exit 0
+        ;;
+esac

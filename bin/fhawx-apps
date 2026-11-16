@@ -83,19 +83,20 @@ MENU_ITEMS=(
     "2.  [Action]   Switch Workspace (Alt+W)"
     "3.  [Action]   Kill Active Pane (Alt+K)"
     "4.  [Terminal] New Bash Shell (Split Right)"
-    "5.  [Writing]  Daily Writer Note (micro)"
-    "6.  [Focus]    Klondike Solitaire (fhawx-solitaire)"
-    "7.  [Connect]  SSH Station (fhawx-ssh)"
-    "8.  [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
-    "9.  [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
-    "10. [Audio]    Volume Control & Mixer (alsamixer)"
-    "11. [System]   System Resource Monitor (btop)"
-    "12. [Info]     System Telemetry (fastfetch)"
-    "13. [Scripts]  Run Custom Script (~/scripts/)"
-    "14. [Help]     Command Cheatsheet (Pure-Alt Keys)"
-    "15. [Leave]    Minimize to Normal Shell (Alt+Q)"
-    "16. [Exit]     Shut Down FhawxTDE Session"
-    "17. [Power]    Reboot or Shutdown Computer"
+    "5.  [Web]      Web Browser / Open URL (fhawx-web)"
+    "6.  [Writing]  Daily Writer Note (micro)"
+    "7.  [Focus]    Klondike Solitaire (fhawx-solitaire)"
+    "8.  [Connect]  SSH Station (fhawx-ssh)"
+    "9.  [Network]  Wi-Fi Connection Manager (fhawx-wifi)"
+    "10. [Network]  WireGuard VPN Tunnel (fhawx-vpn)"
+    "11. [Audio]    Volume Control & Mixer (alsamixer)"
+    "12. [System]   System Resource Monitor (btop)"
+    "13. [Info]     System Telemetry (fastfetch)"
+    "14. [Scripts]  Run Custom Script (~/scripts/)"
+    "15. [Help]     Command Cheatsheet (Pure-Alt Keys)"
+    "16. [Leave]    Minimize to Normal Shell (Alt+Q)"
+    "17. [Exit]     Shut Down FhawxTDE Session"
+    "18. [Power]    Reboot or Shutdown Computer"
     "0.  [Cancel]   Exit Menu (ESC)"
 )
 
@@ -120,6 +121,10 @@ case "$CHOICE" in
         ;;
     *"New Bash Shell"*)
         dispatch_app "bash"
+        ;;
+    *"Web Browser"*)
+        clear
+        exec "$HOME/.local/bin/fhawx-web"
         ;;
     *"Daily Writer Note"*)
         NOTE_FILE="$HOME/Documents/Daily_Note.md"
@@ -187,6 +192,7 @@ EOF
                 "⚡ FHAWXTDE PURE-ALT CHEATSHEET" \
                 "" \
                 "  Alt + A     : Open Command Palette / App Launcher" \
+                "  Alt + B     : Open Web Browser / URL Launcher (fhawx-web)" \
                 "  Alt + Space : Open Command Palette (Alias)" \
                 "  Alt + W     : Toggle Workspace (Workspace 1 ◄► 2)" \
                 "  Alt + S     : Toggle Split (Single Fullscreen ◄► Dual Pane)" \
