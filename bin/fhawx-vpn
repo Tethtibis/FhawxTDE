@@ -32,7 +32,11 @@ if [ -n "$ACTIVE_TUNNEL" ]; then
 
     case "$ACTION" in
         *"Disconnect VPN"*)
-            sudo wg-quick down "$ACTIVE_TUNNEL"
+            if [ -f "$WG_DIR/${ACTIVE_TUNNEL}.conf" ]; then
+                sudo wg-quick down "$WG_DIR/${ACTIVE_TUNNEL}.conf"
+            else
+                sudo wg-quick down "$ACTIVE_TUNNEL"
+            fi
             echo "WireGuard tunnel $ACTIVE_TUNNEL disconnected."
             sleep 1
             ;;
